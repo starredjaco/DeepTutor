@@ -12,6 +12,7 @@ src/agents/question/reference_papers/
 src/services/rag/eg_only_for_analysis/
 benchmark/data/
 paper/
+benchmark/iso_solve/report_trace/
 
 # ============================================
 # Python Related
@@ -147,3 +148,4 @@ dmypy.json
 # Benchmark cached data & results
 benchmark/iso_solve/data/
 benchmark/iso_solve/results/
+benchmark/iso_solve/report_trace/

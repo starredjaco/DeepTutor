@@ -54,10 +54,12 @@ except Exception as e:
 
 from .code_executor import run_code, run_code_sync
 from .rag_tool import rag_search
+from .reason import reason
 from .web_search import web_search
 
 __all__ = [
     "rag_search",
+    "reason",
     "run_code",
     "run_code_sync",
     "web_search",

@@ -37,22 +37,28 @@ class MainSolver:
         api_key: str | None = None,
         base_url: str | None = None,
         api_version: str | None = None,
+        model: str | None = None,
         language: str | None = None,
         kb_name: str = "ai-textbook",
         output_base_dir: str | None = None,
         tool_registry: ToolRegistry | None = None,
         disable_memory: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> None:
         # Store init params for ainit()
         self._config_path = config_path
         self._api_key = api_key
         self._base_url = base_url
         self._api_version = api_version
+        self._model = model
         self._language = language
         self._kb_name = kb_name
         self._output_base_dir = output_base_dir
         self._external_tool_registry = tool_registry
         self.disable_memory = disable_memory
+        self._max_tokens_override = max_tokens
+        self._temperature_override = temperature
 
         # Will be set in ainit()
         self.config: dict[str, Any] = {}
@@ -199,12 +205,22 @@ class MainSolver:
             api_key=self.api_key,
             base_url=self.base_url,
             api_version=self.api_version,
+            model=self._model,
             token_tracker=self.token_tracker,
             language=lang,
         )
         self.planner_agent = PlannerAgent(**common, tool_registry=self.tool_registry)
         self.solver_agent = SolverAgent(**common, tool_registry=self.tool_registry)
         self.writer_agent = WriterAgent(**common)
+
+        # Apply per-run overrides from benchmark config (pipeline.max_tokens / pipeline.temperature)
+        if self._max_tokens_override is not None or self._temperature_override is not None:
+            for agent in (self.planner_agent, self.solver_agent, self.writer_agent):
+                if self._max_tokens_override is not None:
+                    agent._agent_params["max_tokens"] = self._max_tokens_override
+                if self._temperature_override is not None:
+                    agent._agent_params["temperature"] = self._temperature_override
+
         self.logger.info(
             f"Agents initialised (lang={lang}), tools registered: {self.tool_registry.tool_names}"
         )
@@ -216,6 +232,7 @@ class MainSolver:
     async def solve(
         self,
         question: str,
+        image_url: str | None = None,
         verbose: bool = True,
         detailed: bool | None = None,
     ) -> dict[str, Any]:
@@ -223,6 +240,7 @@ class MainSolver:
 
         Args:
             question: The user question to solve.
+            image_url: Optional image URL for multimodal questions.
             verbose: Enable verbose logging.
             detailed: If True, use iterative detailed writing. If None, read from config.
 
@@ -250,7 +268,7 @@ class MainSolver:
         self.logger.info(f"Output: {output_dir}")
 
         try:
-            result = await self._run_pipeline(question, output_dir)
+            result = await self._run_pipeline(question, output_dir, image_url=image_url)
             result["metadata"] = {
                 **result.get("metadata", {}),
                 "mode": "plan_react_write",
@@ -288,6 +306,7 @@ class MainSolver:
         self,
         question: str,
         output_dir: str,
+        image_url: str | None = None,
     ) -> dict[str, Any]:
         solve_cfg = self.config.get("solve", {})
         max_react = solve_cfg.get("max_react_iterations", 5)
@@ -313,6 +332,7 @@ class MainSolver:
             scratchpad=scratchpad,
             kb_name=self.kb_name,
             memory_context=memory_ctx,
+            image_url=image_url,
         )
         scratchpad.set_plan(plan)
         scratchpad.save(output_dir)
@@ -371,6 +391,7 @@ class MainSolver:
                     current_step=step,
                     scratchpad=scratchpad,
                     memory_context=step_memory_context,
+                    image_url=image_url,
                 )
 
                 action = decision["action"]
@@ -421,6 +442,7 @@ class MainSolver:
                             kb_name=self.kb_name,
                             replan=True,
                             memory_context=replan_memory,
+                            image_url=image_url,
                         )
                         scratchpad.update_plan(new_plan)
                         scratchpad.save(output_dir)
@@ -438,6 +460,8 @@ class MainSolver:
                     action=action,
                     action_input=action_input,
                     output_dir=output_dir,
+                    question=question,
+                    scratchpad=scratchpad,
                 )
 
                 scratchpad.add_entry(
@@ -539,6 +563,8 @@ class MainSolver:
         action: str,
         action_input: str,
         output_dir: str,
+        question: str = "",
+        scratchpad: Scratchpad | None = None,
     ) -> tuple[str, list[Source]]:
         """Execute a tool and return (observation_text, sources)."""
         obs_max = self.config.get("solve", {}).get("observation_max_tokens", 2000)
@@ -550,7 +576,11 @@ class MainSolver:
             elif action == "web_search":
                 observation, sources = await self._tool_web(action_input, output_dir, obs_max)
             elif action == "code_execute":
-                observation, sources = await self._tool_code(action_input, obs_max)
+                observation, sources = await self._tool_code(action_input, obs_max, output_dir)
+            elif action == "reason":
+                observation, sources = await self._tool_reason(
+                    action_input, question, scratchpad, obs_max,
+                )
             else:
                 observation = f"Unknown action: {action}"
         except Exception as exc:
@@ -595,7 +625,7 @@ class MainSolver:
         return observation, sources
 
     async def _tool_code(
-        self, intent: str, max_chars: int
+        self, intent: str, max_chars: int, output_dir: str | None = None
     ) -> tuple[str, list[Source]]:
         """Generate Python code from intent, then execute it."""
         # Step 1: Generate code from the intent description
@@ -608,6 +638,7 @@ class MainSolver:
             language="python",
             code=code,
             timeout=30,
+            workspace_dir=(os.path.join(output_dir, "code_runs") if output_dir else None),
         )
 
         parts: list[str] = []
@@ -651,6 +682,48 @@ class MainSolver:
                 lines = lines[:-1]
             code = "\n".join(lines)
         return code
+
+    async def _tool_reason(
+        self,
+        query: str,
+        question: str,
+        scratchpad: Scratchpad | None,
+        max_chars: int,
+    ) -> tuple[str, list[Source]]:
+        """Invoke the stateless deep-reasoning tool."""
+        from src.tools.reason import reason
+
+        # Build context from scratchpad so the reasoning LLM has background
+        context_parts: list[str] = []
+        if question:
+            context_parts.append(f"Original question: {question}")
+        if scratchpad:
+            if scratchpad.plan:
+                context_parts.append(f"Plan:\n{scratchpad._format_plan()}")
+            # Summaries of completed steps
+            completed = scratchpad.get_completed_steps()
+            if completed:
+                notes: list[str] = []
+                for step in completed:
+                    entries = scratchpad.get_entries_for_step(step.id)
+                    step_notes = [e.self_note for e in entries if e.self_note]
+                    if step_notes:
+                        notes.append(f"[{step.id}] {step.goal}: {' '.join(step_notes)}")
+                if notes:
+                    context_parts.append("Knowledge from previous steps:\n" + "\n".join(notes))
+
+        context = "\n\n".join(context_parts)
+
+        result = await reason(
+            query=query,
+            context=context,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.solver_agent.get_model(),
+        )
+
+        observation = result.get("answer", "(no reasoning output)")
+        return observation[:max_chars * 4], []
 
     # ------------------------------------------------------------------
     # Helpers

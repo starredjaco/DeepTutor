@@ -26,6 +26,24 @@ _MAX_AGGREGATE_INPUT_CHARS = 6000
 _NUM_QUERIES = 3
 
 
+def _build_multimodal_messages(
+    system_prompt: str,
+    user_prompt: str,
+    image_url: str,
+) -> list[dict[str, Any]]:
+    """Build OpenAI-compatible multimodal messages with an image."""
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        },
+    ]
+
+
 class PlannerAgent(BaseAgent):
     """Generates a high-level solving plan from the user question."""
 
@@ -34,6 +52,7 @@ class PlannerAgent(BaseAgent):
         config: dict[str, Any] | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        model: str | None = None,
         api_version: str | None = None,
         token_tracker: Any | None = None,
         language: str = "en",
@@ -44,6 +63,7 @@ class PlannerAgent(BaseAgent):
             agent_name="planner_agent",
             api_key=api_key,
             base_url=base_url,
+            model=model,
             api_version=api_version,
             config=config or {},
             token_tracker=token_tracker,
@@ -58,6 +78,7 @@ class PlannerAgent(BaseAgent):
         kb_name: str = "",
         replan: bool = False,
         memory_context: str = "",
+        image_url: str | None = None,
     ) -> Plan:
         """Generate or revise the solving plan.
 
@@ -67,6 +88,7 @@ class PlannerAgent(BaseAgent):
             kb_name: Knowledge base name (informational).
             replan: If True, this is a replan request — include progress so far.
             memory_context: Historical memory context string.
+            image_url: Optional image URL for multimodal questions.
 
         Returns:
             A Plan object with ordered steps.
@@ -83,12 +105,19 @@ class PlannerAgent(BaseAgent):
             rag_context=rag_context,
         )
 
-        response = await self.call_llm(
-            user_prompt=user_prompt,
-            system_prompt=system_prompt,
-            response_format={"type": "json_object"},
-            stage="plan" if not replan else "replan",
-        )
+        llm_kwargs: dict[str, Any] = {
+            "user_prompt": user_prompt,
+            "system_prompt": system_prompt,
+            "response_format": {"type": "json_object"},
+            "stage": "plan" if not replan else "replan",
+        }
+
+        if image_url:
+            llm_kwargs["messages"] = _build_multimodal_messages(
+                system_prompt, user_prompt, image_url,
+            )
+
+        response = await self.call_llm(**llm_kwargs)
 
         return self._parse_plan(response, scratchpad if replan else None)
 

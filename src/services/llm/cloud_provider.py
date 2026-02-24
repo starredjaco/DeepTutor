@@ -131,7 +131,7 @@ def _get_aiohttp_connector() -> aiohttp.TCPConnector | None:
     return aiohttp.TCPConnector(ssl=False)
 
 
-from .capabilities import get_effective_temperature, supports_response_format
+from .capabilities import get_effective_temperature, has_thinking_tags, supports_response_format
 from .config import get_token_limit_kwargs
 from .exceptions import LLMAPIError, LLMAuthenticationError, LLMConfigError
 from .utils import (
@@ -307,6 +307,9 @@ async def _openai_complete(
     content = None
     # When pre-built messages are provided, skip lightrag (it expects prompt+history, not messages)
     # and use direct aiohttp call. Otherwise try lightrag first for caching.
+    # Qwen3 thinking models require enable_thinking=false for non-streaming
+    _needs_thinking_off = has_thinking_tags(binding, model)
+
     if not messages:
         try:
             history_messages: list[dict[str, str]] = []
@@ -316,6 +319,10 @@ async def _openai_complete(
             lightrag_kwargs.pop("api_key", None)
             lightrag_kwargs.pop("base_url", None)
             lightrag_kwargs.pop("api_version", None)
+
+            if _needs_thinking_off:
+                lightrag_kwargs.setdefault("extra_body", {})
+                lightrag_kwargs["extra_body"]["enable_thinking"] = False  # type: ignore[index]
 
             original_lightrag_level = _lightrag_logger.level
             original_openai_level = _openai_logger.level
@@ -382,6 +389,9 @@ async def _openai_complete(
         response_format = kwargs.get("response_format")
         if response_format is not None:
             data["response_format"] = response_format
+
+        if _needs_thinking_off:
+            data["enable_thinking"] = False
 
         timeout = aiohttp.ClientTimeout(total=120)
         connector = _get_aiohttp_connector()

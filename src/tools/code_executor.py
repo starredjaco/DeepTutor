@@ -246,6 +246,7 @@ async def run_code(
     code: str,
     timeout: int = 10,
     allowed_imports: list[str] | None = None,
+    workspace_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Execute code in an isolated, persistent directory under ``run_code_workspace``.
 
@@ -260,9 +261,15 @@ async def run_code(
     if language.lower() != "python":
         raise ValueError(f"Unsupported language: {language}, currently only Python is supported")
 
-    WORKSPACE_MANAGER.ensure_initialized()
-
-    execution_dir = WORKSPACE_MANAGER.create_execution_dir()
+    if workspace_dir is not None:
+        custom_workspace = Path(workspace_dir).expanduser().resolve()
+        custom_workspace.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        execution_dir = custom_workspace / f"exec_{timestamp}"
+        execution_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        WORKSPACE_MANAGER.ensure_initialized()
+        execution_dir = WORKSPACE_MANAGER.create_execution_dir()
     stdout, stderr, exit_code, elapsed_ms = "", "", -1, 0.0
     status = "error"
 

@@ -20,6 +20,24 @@ from ..tools import ToolRegistry
 from ..utils.json_utils import extract_json_from_text
 
 
+def _build_multimodal_messages(
+    system_prompt: str,
+    user_prompt: str,
+    image_url: str,
+) -> list[dict[str, Any]]:
+    """Build OpenAI-compatible multimodal messages with an image."""
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        },
+    ]
+
+
 class SolverAgent(BaseAgent):
     """ReAct reasoning agent — one LLM call per iteration."""
 
@@ -28,6 +46,7 @@ class SolverAgent(BaseAgent):
         config: dict[str, Any] | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
+        model: str | None = None,
         api_version: str | None = None,
         token_tracker: Any | None = None,
         language: str = "en",
@@ -38,6 +57,7 @@ class SolverAgent(BaseAgent):
             agent_name="solver_agent",
             api_key=api_key,
             base_url=base_url,
+            model=model,
             api_version=api_version,
             config=config or {},
             token_tracker=token_tracker,
@@ -51,8 +71,16 @@ class SolverAgent(BaseAgent):
         current_step: PlanStep,
         scratchpad: Scratchpad,
         memory_context: str = "",
+        image_url: str | None = None,
     ) -> dict[str, str]:
         """Run one ReAct iteration for the given plan step.
+
+        Args:
+            question: The user's original question.
+            current_step: The plan step being solved.
+            scratchpad: Current scratchpad state.
+            memory_context: Historical memory context string.
+            image_url: Optional image URL for multimodal questions.
 
         Returns:
             dict with keys: thought, action, action_input, self_note
@@ -65,12 +93,19 @@ class SolverAgent(BaseAgent):
             memory_context=memory_context,
         )
 
-        response = await self.call_llm(
-            user_prompt=user_prompt,
-            system_prompt=system_prompt,
-            response_format={"type": "json_object"},
-            stage=f"solve_{current_step.id}",
-        )
+        llm_kwargs: dict[str, object] = {
+            "user_prompt": user_prompt,
+            "system_prompt": system_prompt,
+            "response_format": {"type": "json_object"},
+            "stage": f"solve_{current_step.id}",
+        }
+
+        if image_url:
+            llm_kwargs["messages"] = _build_multimodal_messages(
+                system_prompt, user_prompt, image_url,
+            )
+
+        response = await self.call_llm(**llm_kwargs)
 
         return self._parse_decision(response)
 
