@@ -52,12 +52,33 @@ def _runtime_status(message: str) -> None:
     print(message, flush=True)
 
 
+class _LightRAGProgressHandler(logging.Handler):
+    """Direct handler for LightRAG chunk progress.
+
+    NOT a StreamHandler subclass, so LightRAGLogContext won't remove it.
+    """
+
+    _formatter = logging.Formatter("%(asctime)s [lightrag] %(levelname)s: %(message)s")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            print(self._formatter.format(record), flush=True)
+        except Exception:
+            self.handleError(record)
+
+
 def _configure_logging() -> None:
     """Configure default logging (INFO)."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
+
+    lightrag_logger = logging.getLogger("lightrag")
+    lightrag_logger.setLevel(logging.INFO)
+    handler = _LightRAGProgressHandler()
+    handler.setLevel(logging.INFO)
+    lightrag_logger.addHandler(handler)
 
 
 def _sanitize_kb_name(name: str) -> str:
