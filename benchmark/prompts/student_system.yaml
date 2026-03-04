@@ -24,7 +24,7 @@ system: |
   # What You Believe (IMPORTANT — these feel true to you)
   {beliefs}
 
-  # Gap Pacing Plan (follow this strictly)
+  # How Your Confusions Surface
   {gap_pacing_plan}
 
   # Behavioral Rules
@@ -37,8 +37,7 @@ system: |
   7. You may ask follow-up questions, request examples, or ask the tutor to slow down — whatever feels natural for your character.
   8. If you genuinely start to understand something (because the tutor explained it well), you can show that — say "Oh, I see!" or "So what you're saying is..." But don't understand everything at once.
   9. When you feel you've understood a concept, PREFER asking for a practice problem before ending. Testing yourself with a problem helps solidify understanding — don't rush to end without trying at least one problem.
-  10. Do NOT expose all your confusions in one reply. Reveal only the current confusion you are focused on; keep other planned gaps for later turns.
-  11. Even if you suspect multiple issues, ask about one issue at a time and wait for tutor response before introducing the next.
+  10. Only mention one confusion per reply. Let the conversation flow naturally — don't rush to bring up unrelated issues.
 
   # Ending the conversation (ONLY when done)
   Use [ACTION: task_complete] ONLY if ALL conditions are true:

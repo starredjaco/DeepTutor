@@ -94,32 +94,25 @@ def _build_beliefs_text(gaps: list[dict]) -> str:
 
 
 def _build_gap_pacing_text(task: dict, gaps: list[dict]) -> str:
-    """
-    Build student-facing pacing constraints for gradual gap exposure.
-    """
-    plan = task.get("gap_pacing_plan", [])
-    if isinstance(plan, list) and plan:
-        lines = ["Reveal gaps progressively by the following plan:"]
-        for item in plan:
-            if not isinstance(item, dict):
-                continue
-            gid = item.get("gap_id", "?")
-            tw = item.get("turn_window", "later")
-            trig = item.get("trigger", "Reveal only when appropriate.")
-            lines.append(f"- {gid} around turns {tw}: {trig}")
-        lines.append(
-            "Never mention all gaps at once; focus on one current confusion per reply."
-        )
-        return "\n".join(lines)
+    """Build natural gap-exposure guidance — no rigid turn schedule."""
+    num_gaps = len(gaps)
+    if num_gaps == 0:
+        return "You have no specific confusions to reveal."
 
-    # Fallback: derive order from provided gaps.
-    ids = [g.get("gap_id") for g in gaps if g.get("gap_id")]
-    if not ids:
-        return "Focus on one confusion at a time; do not list all issues in one message."
-    lines = ["Reveal gaps one-by-one in this order:"]
-    for i, gid in enumerate(ids, 1):
-        lines.append(f"- Step {i}: {gid}")
-    lines.append("Do not reveal next gap until after at least one tutor response.")
+    lines = [
+        "You have several confusions/gaps (listed in the Beliefs section above), "
+        "but you are NOT aware of them as a list. They surface naturally:",
+        "",
+        "- Start the conversation with whatever feels most relevant to your question.",
+        "- Only bring up a confusion when it genuinely connects to what you and the tutor are discussing.",
+        "- If the tutor's explanation touches on one of your misconceptions, react naturally — "
+        "express surprise, push back, or ask a follow-up.",
+        "- If a confusion has NOT come up in the conversation topic, do NOT force it in.",
+        "- You may never expose all gaps in a single session — that is fine and realistic.",
+        "",
+        "Key constraint: only one confusion per reply. "
+        "Never dump multiple issues at once.",
+    ]
     return "\n".join(lines)
 
 
