@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 """
 Check entry health across all KBs in the bench_pipeline output.
+With --fix, automatically regenerate unhealthy entries via LLM.
 
 Usage:
     python3 -m benchmark.pipeline.check_entries
-    python3 -m benchmark.pipeline.check_entries --output-root benchmark/data/bench_pipeline
     python3 -m benchmark.pipeline.check_entries --kb-names kb1,kb2
+    python3 -m benchmark.pipeline.check_entries --fix
+    python3 -m benchmark.pipeline.check_entries --fix --concurrency 4
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
+import yaml
+
 _THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = _THIS_FILE.parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+DEFAULT_CONFIG = PROJECT_ROOT / "benchmark" / "config" / "benchmark_config.yaml"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmark" / "data" / "bench_pipeline"
 
 ANSI_GREEN = "\033[92m"
@@ -24,7 +33,11 @@ ANSI_YELLOW = "\033[93m"
 ANSI_RED = "\033[91m"
 ANSI_DIM = "\033[2m"
 ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[96m"
 ANSI_RESET = "\033[0m"
+
+FIX_RETRY_ATTEMPTS = 3
+FIX_RETRY_DELAY_SEC = 3.0
 
 
 def _count_jsonl(path: Path) -> int:
@@ -37,7 +50,6 @@ def _count_jsonl(path: Path) -> int:
 
 
 def _check_entry_quality(entry: dict) -> list[str]:
-    """Return list of warnings for a single entry."""
     warnings = []
     if not entry.get("gaps"):
         warnings.append("no gaps")
@@ -54,20 +66,306 @@ def _check_entry_quality(entry: dict) -> list[str]:
     return warnings
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Check entry health")
-    parser.add_argument(
-        "--output-root",
-        default=str(DEFAULT_OUTPUT_ROOT),
-        help=f"Pipeline output root (default: {DEFAULT_OUTPUT_ROOT})",
-    )
-    parser.add_argument(
-        "--kb-names",
-        default=None,
-        help="Comma-separated KB names to check (default: all)",
-    )
-    args = parser.parse_args()
+def _classify_profile(
+    profile_dir: Path,
+) -> tuple[str, int, list[str]]:
+    """Classify a profile as ok / warn / empty / missing. Returns (status, n_entries, warnings)."""
+    entries_jsonl = profile_dir / "entries.jsonl"
+    if not entries_jsonl.exists():
+        return "missing", 0, []
 
+    n_entries = _count_jsonl(entries_jsonl)
+    if n_entries == 0:
+        return "empty", 0, []
+
+    entry_warnings: list[str] = []
+    try:
+        with open(entries_jsonl, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                ws = _check_entry_quality(entry)
+                entry_warnings.extend(
+                    f"{entry.get('entry_id', '?')}: {w}" for w in ws
+                )
+    except Exception as e:
+        entry_warnings.append(f"parse error: {e}")
+
+    if entry_warnings:
+        return "warn", n_entries, entry_warnings
+    return "ok", n_entries, []
+
+
+def _save_profile_entries(entries: list[dict], profile_dir: Path) -> None:
+    entries_dir = profile_dir / "entries"
+    if entries_dir.exists():
+        shutil.rmtree(entries_dir)
+    entries_dir.mkdir(parents=True, exist_ok=True)
+
+    jsonl_path = profile_dir / "entries.jsonl"
+    with open(jsonl_path, "w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    for entry in entries:
+        entry_id = entry.get("entry_id", "unknown")
+        out = entries_dir / f"{entry_id}.json"
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(entry, f, ensure_ascii=False, indent=2)
+
+
+async def _fix_one_profile(
+    *,
+    kb_name: str,
+    profile_id: str,
+    profile: dict,
+    scope: dict,
+    cfg: dict,
+    kb_base_dir: str,
+    profile_dir: Path,
+    semaphore: asyncio.Semaphore,
+) -> dict:
+    from benchmark.simulation.batch_simulation import _generate_entries_for_profile
+
+    async with semaphore:
+        result = {
+            "kb_name": kb_name,
+            "profile_id": profile_id,
+            "status": "ok",
+            "num_entries": 0,
+            "error": None,
+        }
+
+        entries: list[dict] = []
+        last_error: str | None = None
+
+        for attempt in range(1, FIX_RETRY_ATTEMPTS + 1):
+            try:
+                entries = await _generate_entries_for_profile(
+                    kb_name=kb_name,
+                    profile=profile,
+                    knowledge_scope=scope,
+                    cfg=cfg,
+                    kb_base_dir=kb_base_dir,
+                )
+            except Exception as e:
+                last_error = str(e)
+                print(
+                    f"    {ANSI_YELLOW}attempt {attempt}/{FIX_RETRY_ATTEMPTS} "
+                    f"failed: {e}{ANSI_RESET}"
+                )
+                if attempt < FIX_RETRY_ATTEMPTS:
+                    await asyncio.sleep(FIX_RETRY_DELAY_SEC * attempt)
+                continue
+
+            if entries:
+                break
+
+            print(
+                f"    {ANSI_YELLOW}attempt {attempt}/{FIX_RETRY_ATTEMPTS} "
+                f"returned 0 entries{ANSI_RESET}"
+            )
+            last_error = "0 entries"
+            if attempt < FIX_RETRY_ATTEMPTS:
+                await asyncio.sleep(FIX_RETRY_DELAY_SEC * attempt)
+
+        if entries:
+            _save_profile_entries(entries, profile_dir)
+            if not (profile_dir / "profile.json").exists():
+                with open(profile_dir / "profile.json", "w", encoding="utf-8") as f:
+                    json.dump(profile, f, ensure_ascii=False, indent=2)
+            result["num_entries"] = len(entries)
+            print(
+                f"    {ANSI_GREEN}✓ fixed: {len(entries)} entries{ANSI_RESET}"
+            )
+        else:
+            result["status"] = "error"
+            result["error"] = last_error
+            print(
+                f"    {ANSI_RED}✗ fix failed after {FIX_RETRY_ATTEMPTS} "
+                f"attempts: {last_error}{ANSI_RESET}"
+            )
+
+        return result
+
+
+def _load_profile_data(
+    kb_name: str, profile_id: str, entries_root: Path
+) -> dict | None:
+    """Load profile dict from profile.json or profiles.json."""
+    profile_json = entries_root / kb_name / "profiles" / profile_id / "profile.json"
+    if profile_json.exists():
+        with open(profile_json, encoding="utf-8") as f:
+            return json.load(f)
+
+    profiles_json = entries_root / kb_name / "profiles.json"
+    if profiles_json.exists():
+        with open(profiles_json, encoding="utf-8") as f:
+            profiles = json.load(f)
+        for p in profiles:
+            if p.get("profile_id") == profile_id:
+                return p
+
+    return None
+
+
+def _load_scope(kb_name: str, entries_root: Path) -> dict | None:
+    scope_path = entries_root / kb_name / "knowledge_scope.json"
+    if not scope_path.exists():
+        return None
+    with open(scope_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def scan_entries(
+    entries_root: Path, kb_names: list[str]
+) -> tuple[
+    list[str], list[str], list[str], list[str],
+    dict[str, list[str]], int, int
+]:
+    """Scan and classify all profiles. Returns (ok, warn, empty, missing, kb_details, total_profiles, total_entries)."""
+    ok_profiles: list[str] = []
+    warn_profiles: list[str] = []
+    empty_profiles: list[str] = []
+    missing_profiles: list[str] = []
+    kb_details: dict[str, list[str]] = {}
+    total_profiles = 0
+    total_entries = 0
+
+    for kb_name in kb_names:
+        kb_dir = entries_root / kb_name
+        kb_lines: list[str] = []
+        if not kb_dir.exists():
+            kb_lines.append(f"  {ANSI_RED}directory not found{ANSI_RESET}")
+            kb_details[kb_name] = kb_lines
+            continue
+
+        scope_path = kb_dir / "knowledge_scope.json"
+        if scope_path.exists():
+            try:
+                with open(scope_path, encoding="utf-8") as f:
+                    scope = json.load(f)
+                topic = scope.get("topic", scope.get("title", "?"))
+                n_concepts = len(scope.get("concepts", []))
+                kb_lines.append(f"  {ANSI_DIM}scope: {topic} ({n_concepts} concepts){ANSI_RESET}")
+            except Exception:
+                kb_lines.append(f"  {ANSI_YELLOW}scope: parse error{ANSI_RESET}")
+
+        profiles_root = kb_dir / "profiles"
+        if not profiles_root.exists():
+            kb_lines.append(f"  {ANSI_RED}no profiles/ directory{ANSI_RESET}")
+            kb_details[kb_name] = kb_lines
+            continue
+
+        profile_dirs = sorted(p for p in profiles_root.iterdir() if p.is_dir())
+        for profile_dir in profile_dirs:
+            total_profiles += 1
+            profile_id = profile_dir.name
+            full_id = f"{kb_name}/{profile_id}"
+            has_profile_json = (profile_dir / "profile.json").exists()
+
+            status, n_entries, warnings = _classify_profile(profile_dir)
+            total_entries += n_entries
+
+            if status == "missing":
+                missing_profiles.append(full_id)
+                kb_lines.append(
+                    f"    {ANSI_RED}✗{ANSI_RESET} {profile_id}  "
+                    f"{ANSI_RED}entries.jsonl missing{ANSI_RESET}"
+                )
+            elif status == "empty":
+                empty_profiles.append(full_id)
+                kb_lines.append(
+                    f"    {ANSI_RED}✗{ANSI_RESET} {profile_id}  "
+                    f"{ANSI_RED}0 entries{ANSI_RESET}"
+                )
+            elif status == "warn":
+                warn_profiles.append(full_id)
+                kb_lines.append(
+                    f"    {ANSI_YELLOW}⚠{ANSI_RESET} {profile_id}  "
+                    f"{n_entries} entries  "
+                    f"{ANSI_YELLOW}{len(warnings)} warnings{ANSI_RESET}  "
+                    f"profile.json:{'✓' if has_profile_json else '✗'}"
+                )
+                for w in warnings[:5]:
+                    kb_lines.append(f"      {ANSI_DIM}└ {w}{ANSI_RESET}")
+                if len(warnings) > 5:
+                    kb_lines.append(
+                        f"      {ANSI_DIM}└ ...and {len(warnings) - 5} more{ANSI_RESET}"
+                    )
+            else:
+                ok_profiles.append(full_id)
+                kb_lines.append(
+                    f"    {ANSI_GREEN}✓{ANSI_RESET} {profile_id}  "
+                    f"{n_entries} entries  "
+                    f"profile.json:{'✓' if has_profile_json else '✗'}"
+                )
+
+        kb_details[kb_name] = kb_lines
+
+    return ok_profiles, warn_profiles, empty_profiles, missing_profiles, kb_details, total_profiles, total_entries
+
+
+def print_report(
+    kb_names: list[str],
+    entries_root: Path,
+    ok_profiles: list[str],
+    warn_profiles: list[str],
+    empty_profiles: list[str],
+    missing_profiles: list[str],
+    kb_details: dict[str, list[str]],
+    total_profiles: int,
+    total_entries: int,
+) -> None:
+    print(f"\n{ANSI_BOLD}Entry Health Check{ANSI_RESET}")
+    print(f"Root: {entries_root}")
+    print(f"KBs:  {len(kb_names)}\n")
+    print("=" * 80)
+
+    for kb_name in kb_names:
+        lines = kb_details.get(kb_name, [])
+        has_error = any(
+            f.startswith(kb_name + "/") for f in empty_profiles + missing_profiles
+        )
+        has_warn = any(f.startswith(kb_name + "/") for f in warn_profiles)
+        if has_error:
+            icon = f"{ANSI_RED}✗{ANSI_RESET}"
+        elif has_warn:
+            icon = f"{ANSI_YELLOW}⚠{ANSI_RESET}"
+        else:
+            icon = f"{ANSI_GREEN}✓{ANSI_RESET}"
+        print(f"\n{icon} {ANSI_BOLD}{kb_name}{ANSI_RESET}")
+        for line in lines:
+            print(line)
+
+    print("\n" + "=" * 80)
+    print(f"\n{ANSI_BOLD}Summary{ANSI_RESET}")
+    print(f"  KBs:       {len(kb_names)}")
+    print(f"  Profiles:  {total_profiles}")
+    print(f"  Entries:   {total_entries}")
+
+    print(f"\n  {ANSI_GREEN}OK{ANSI_RESET}:      {len(ok_profiles)}")
+    for p in ok_profiles:
+        print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
+
+    print(f"  {ANSI_YELLOW}WARN{ANSI_RESET}:    {len(warn_profiles)}")
+    for p in warn_profiles:
+        print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
+
+    print(f"  {ANSI_RED}EMPTY{ANSI_RESET}:   {len(empty_profiles)}")
+    for p in empty_profiles:
+        print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
+
+    print(f"  {ANSI_RED}MISSING{ANSI_RESET}: {len(missing_profiles)}")
+    for p in missing_profiles:
+        print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
+
+    print()
+
+
+async def run(args: argparse.Namespace) -> None:
     output_root = Path(args.output_root)
     if not output_root.is_absolute():
         output_root = (PROJECT_ROOT / output_root).resolve()
@@ -80,183 +378,151 @@ def main() -> None:
     if args.kb_names:
         kb_names = sorted(set(n.strip() for n in args.kb_names.split(",") if n.strip()))
     else:
-        kb_names = sorted(
-            d.name
-            for d in entries_root.iterdir()
-            if d.is_dir()
-        )
+        kb_names = sorted(d.name for d in entries_root.iterdir() if d.is_dir())
 
     if not kb_names:
         print(f"{ANSI_RED}No KBs found in {entries_root}{ANSI_RESET}")
         sys.exit(1)
 
-    total_kbs = len(kb_names)
-    total_profiles = 0
-    total_entries = 0
-    total_warnings = 0
+    # --- First pass: scan ---
+    ok, warn, empty, missing, details, total_profiles, total_entries = scan_entries(
+        entries_root, kb_names
+    )
+    print_report(
+        kb_names, entries_root, ok, warn, empty, missing, details,
+        total_profiles, total_entries,
+    )
 
-    ok_profiles: list[str] = []
-    warn_profiles: list[str] = []
-    empty_profiles: list[str] = []
-    missing_profiles: list[str] = []
+    unhealthy = empty + missing
+    if not args.fix or not unhealthy:
+        if unhealthy:
+            print(f"Run with {ANSI_CYAN}--fix{ANSI_RESET} to regenerate unhealthy entries.\n")
+            sys.exit(1)
+        return
 
-    print(f"\n{ANSI_BOLD}Entry Health Check{ANSI_RESET}")
-    print(f"Root: {entries_root}")
-    print(f"KBs:  {total_kbs}\n")
-    print("=" * 80)
+    # --- Fix pass ---
+    kb_base_dir = Path(args.kb_dir)
+    if not kb_base_dir.is_absolute():
+        kb_base_dir = (PROJECT_ROOT / kb_base_dir).resolve()
 
-    for kb_name in kb_names:
-        kb_dir = entries_root / kb_name
-        if not kb_dir.exists():
-            print(f"\n{ANSI_RED}✗ {kb_name}{ANSI_RESET}  — directory not found")
+    cfg_path = Path(args.config)
+    if not cfg_path.is_absolute():
+        cfg_path = (PROJECT_ROOT / cfg_path).resolve()
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    print(f"\n{ANSI_BOLD}Fixing {len(unhealthy)} unhealthy profiles...{ANSI_RESET}\n")
+
+    sem = asyncio.Semaphore(args.concurrency)
+    fix_tasks = []
+    skipped: list[str] = []
+
+    for full_id in unhealthy:
+        kb_name, profile_id = full_id.split("/", 1)
+
+        scope = _load_scope(kb_name, entries_root)
+        if not scope:
+            print(
+                f"  {ANSI_RED}✗ {full_id}: no knowledge_scope.json, cannot fix{ANSI_RESET}"
+            )
+            skipped.append(full_id)
             continue
 
-        scope_path = kb_dir / "knowledge_scope.json"
-        profiles_path = kb_dir / "profiles.json"
-        has_scope = scope_path.exists()
-        has_profiles_json = profiles_path.exists()
-
-        scope_info = ""
-        if has_scope:
-            try:
-                with open(scope_path, encoding="utf-8") as f:
-                    scope = json.load(f)
-                topic = scope.get("topic", scope.get("title", "?"))
-                n_concepts = len(scope.get("concepts", []))
-                scope_info = f"  scope: {topic} ({n_concepts} concepts)"
-            except Exception:
-                scope_info = f"  {ANSI_YELLOW}scope: parse error{ANSI_RESET}"
-
-        profiles_root = kb_dir / "profiles"
-        if not profiles_root.exists():
-            print(f"\n{ANSI_RED}✗ {kb_name}{ANSI_RESET}  — no profiles/ directory")
-            if scope_info:
-                print(f"  {ANSI_DIM}{scope_info}{ANSI_RESET}")
-            print(f"  {ANSI_DIM}knowledge_scope.json: {'✓' if has_scope else '✗'}{ANSI_RESET}")
-            print(f"  {ANSI_DIM}profiles.json: {'✓' if has_profiles_json else '✗'}{ANSI_RESET}")
+        profile = _load_profile_data(kb_name, profile_id, entries_root)
+        if not profile:
+            print(
+                f"  {ANSI_RED}✗ {full_id}: no profile data found, cannot fix{ANSI_RESET}"
+            )
+            skipped.append(full_id)
             continue
 
-        profile_dirs = sorted(p for p in profiles_root.iterdir() if p.is_dir())
-        kb_entries_count = 0
-        kb_profile_details: list[str] = []
+        profile_dir = entries_root / kb_name / "profiles" / profile_id
+        profile_dir.mkdir(parents=True, exist_ok=True)
 
-        for profile_dir in profile_dirs:
-            total_profiles += 1
-            profile_id = profile_dir.name
-            full_id = f"{kb_name}/{profile_id}"
-            entries_jsonl = profile_dir / "entries.jsonl"
-            profile_json = profile_dir / "profile.json"
-
-            if not entries_jsonl.exists():
-                missing_profiles.append(full_id)
-                kb_profile_details.append(
-                    f"    {ANSI_RED}✗{ANSI_RESET} {profile_id}  "
-                    f"{ANSI_RED}entries.jsonl missing{ANSI_RESET}"
-                )
-                continue
-
-            n_entries = _count_jsonl(entries_jsonl)
-            if n_entries == 0:
-                empty_profiles.append(full_id)
-                kb_profile_details.append(
-                    f"    {ANSI_RED}✗{ANSI_RESET} {profile_id}  "
-                    f"{ANSI_RED}0 entries{ANSI_RESET}"
-                )
-                continue
-
-            entry_warnings: list[str] = []
-            try:
-                with open(entries_jsonl, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        entry = json.loads(line)
-                        ws = _check_entry_quality(entry)
-                        entry_warnings.extend(
-                            f"{entry.get('entry_id', '?')}: {w}" for w in ws
-                        )
-            except Exception as e:
-                entry_warnings.append(f"parse error: {e}")
-
-            total_entries += n_entries
-            kb_entries_count += n_entries
-
-            has_profile_json = profile_json.exists()
-
-            if entry_warnings:
-                total_warnings += len(entry_warnings)
-                warn_profiles.append(full_id)
-                icon = f"{ANSI_YELLOW}⚠{ANSI_RESET}"
-                detail = (
-                    f"    {icon} {profile_id}  "
-                    f"{n_entries} entries  "
-                    f"{ANSI_YELLOW}{len(entry_warnings)} warnings{ANSI_RESET}  "
-                    f"profile.json:{'✓' if has_profile_json else '✗'}"
-                )
-                kb_profile_details.append(detail)
-                for w in entry_warnings[:5]:
-                    kb_profile_details.append(f"      {ANSI_DIM}└ {w}{ANSI_RESET}")
-                if len(entry_warnings) > 5:
-                    kb_profile_details.append(
-                        f"      {ANSI_DIM}└ ...and {len(entry_warnings) - 5} more{ANSI_RESET}"
-                    )
-            else:
-                ok_profiles.append(full_id)
-                detail = (
-                    f"    {ANSI_GREEN}✓{ANSI_RESET} {profile_id}  "
-                    f"{n_entries} entries  "
-                    f"profile.json:{'✓' if has_profile_json else '✗'}"
-                )
-                kb_profile_details.append(detail)
-
-        status_icon = ANSI_GREEN + "✓" + ANSI_RESET
-        if any(full.startswith(kb_name + "/") for full in empty_profiles + missing_profiles):
-            status_icon = ANSI_RED + "✗" + ANSI_RESET
-        elif any(full.startswith(kb_name + "/") for full in warn_profiles):
-            status_icon = ANSI_YELLOW + "⚠" + ANSI_RESET
-
-        print(
-            f"\n{status_icon} {ANSI_BOLD}{kb_name}{ANSI_RESET}  "
-            f"{len(profile_dirs)} profiles  {kb_entries_count} entries"
+        print(f"  {ANSI_CYAN}→ fixing {full_id}...{ANSI_RESET}")
+        fix_tasks.append(
+            _fix_one_profile(
+                kb_name=kb_name,
+                profile_id=profile_id,
+                profile=profile,
+                scope=scope,
+                cfg=cfg,
+                kb_base_dir=str(kb_base_dir),
+                profile_dir=profile_dir,
+                semaphore=sem,
+            )
         )
-        if scope_info:
-            print(f"  {ANSI_DIM}{scope_info}{ANSI_RESET}")
-        for line in kb_profile_details:
-            print(line)
 
-    # Summary
-    print("\n" + "=" * 80)
-    print(f"\n{ANSI_BOLD}Summary{ANSI_RESET}")
-    print(f"  KBs:       {total_kbs}")
-    print(f"  Profiles:  {total_profiles}")
-    print(f"  Entries:   {total_entries}")
-    print(f"  Warnings:  {total_warnings}")
+    if fix_tasks:
+        results = await asyncio.gather(*fix_tasks, return_exceptions=True)
+        fixed = sum(
+            1
+            for r in results
+            if not isinstance(r, Exception) and r.get("status") == "ok"
+        )
+        failed = len(results) - fixed
+    else:
+        fixed = 0
+        failed = 0
 
-    print(f"\n  {ANSI_GREEN}OK{ANSI_RESET}:      {len(ok_profiles)}")
-    if ok_profiles:
-        for p in ok_profiles:
-            print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
+    # --- Second pass: re-scan ---
+    print(f"\n{'=' * 80}")
+    print(f"{ANSI_BOLD}Post-fix re-scan{ANSI_RESET}")
+    ok2, warn2, empty2, missing2, details2, tp2, te2 = scan_entries(
+        entries_root, kb_names
+    )
+    print_report(
+        kb_names, entries_root, ok2, warn2, empty2, missing2, details2, tp2, te2
+    )
 
-    print(f"  {ANSI_YELLOW}WARN{ANSI_RESET}:    {len(warn_profiles)}")
-    if warn_profiles:
-        for p in warn_profiles:
-            print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
-
-    print(f"  {ANSI_RED}EMPTY{ANSI_RESET}:   {len(empty_profiles)}")
-    if empty_profiles:
-        for p in empty_profiles:
-            print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
-
-    print(f"  {ANSI_RED}MISSING{ANSI_RESET}: {len(missing_profiles)}")
-    if missing_profiles:
-        for p in missing_profiles:
-            print(f"    {ANSI_DIM}{p}{ANSI_RESET}")
-
+    print(f"{ANSI_BOLD}Fix summary{ANSI_RESET}")
+    print(f"  Fixed:   {ANSI_GREEN}{fixed}{ANSI_RESET}")
+    print(f"  Failed:  {ANSI_RED}{failed}{ANSI_RESET}")
+    print(f"  Skipped: {ANSI_YELLOW}{len(skipped)}{ANSI_RESET}")
+    if skipped:
+        for s in skipped:
+            print(f"    {ANSI_DIM}{s}{ANSI_RESET}")
     print()
 
-    if empty_profiles or missing_profiles:
+    if empty2 or missing2:
         sys.exit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Check & fix entry health")
+    parser.add_argument(
+        "--output-root",
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help=f"Pipeline output root (default: {DEFAULT_OUTPUT_ROOT})",
+    )
+    parser.add_argument(
+        "--kb-names",
+        default=None,
+        help="Comma-separated KB names to check (default: all)",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Regenerate entries for unhealthy (empty/missing) profiles",
+    )
+    parser.add_argument(
+        "--kb-dir",
+        default="data/knowledge_bases",
+        help="Knowledge base directory (default: data/knowledge_bases)",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG),
+        help=f"Benchmark config path (default: {DEFAULT_CONFIG})",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=6,
+        help="Max parallel fix tasks (default: 6)",
+    )
+    args = parser.parse_args()
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":
