@@ -137,14 +137,7 @@ def _build_sim_workspace(profile_id: str | None, entry_id: str, shared_by_profil
 
 # Simple tutor system prompt for auto mode
 MOCK_TUTOR_SYSTEM = (
-    "You are a helpful, patient, and knowledgeable tutor. "
-    "A student is asking you for help. Respond clearly and helpfully. "
-    "If they ask for an explanation or walkthrough, provide it. "
-    "If they ask for a practice problem, give them a similar problem (clear statement, no solution yet). "
-    "Ask follow-up questions to check understanding. "
-    "If the student shows a misconception, gently guide them toward the correct understanding "
-    "rather than just stating the answer. Use examples when helpful. "
-    "Keep responses focused and not too long (2-5 sentences typically)."
+    "You are a helpful and patient tutor."
 )
 
 
@@ -152,7 +145,6 @@ async def mock_tutor_respond(
     student_message: str,
     history: list[dict[str, str]],
     kb_name: str | None = None,
-    prior_sessions_summary: str | None = None,
 ) -> str:
     """
     Generate a mock tutor response using LLM.
@@ -162,7 +154,6 @@ async def mock_tutor_respond(
         history: Conversation history from tutor's perspective
             (role="user" for student, role="assistant" for tutor)
         kb_name: Knowledge base name used for RAG retrieval
-        prior_sessions_summary: Optional summary of previous sessions (tutor remembers)
 
     Returns:
         Tutor response string
@@ -171,15 +162,6 @@ async def mock_tutor_respond(
     from src.tools.rag_tool import rag_search
 
     system = MOCK_TUTOR_SYSTEM
-    if prior_sessions_summary:
-        system = (
-            "You have had previous tutoring sessions with this student. "
-            "Use this context to personalize your response.\n\n"
-            "## Previous sessions\n"
-            f"{prior_sessions_summary}\n\n"
-            "---\n\n"
-            + system
-        )
 
     # Auto mode RAG: use raw student message as query in naive mode.
     rag_context = ""
@@ -224,31 +206,14 @@ async def mock_tutor_respond(
 
 
 _TUTOR_INSTRUCTION_BASE = (
-    "You are tutoring a student one-on-one. Respond as a tutor, NOT as an essay writer.\n"
-    "Required response order:\n"
-    "1) Diagnose the student's specific confusion in one short sentence.\n"
-    "2) Explain the 'why' clearly and directly.\n"
-    "3) Give one concrete check the student can run immediately.\n"
-    "4) End with one short guiding question.\n\n"
-    "Style constraints:\n"
-    "- Conversational teaching tone, not a report.\n"
-    "- Maximum 5 sentences total.\n"
-    "- No section headings, no bullet lists, no references section.\n"
-    "- At most one equation if truly needed.\n"
+    "You are a helpful and patient tutor."
 )
 
 
 def _build_tutor_instruction(student_message: str) -> str:
     """Build adaptive tutoring instruction without rule-based matching."""
     _ = student_message  # Keep signature stable for callers.
-    adaptive = (
-        "Adaptive strategy:\n"
-        "- Infer the student's state directly from the latest message and recent context.\n"
-        "- If the student seems confused, simplify language and explain in 2-3 clear steps.\n"
-        "- If the student seems partially confident, do a quick understanding check and then extend by one level.\n"
-        "- If the student appears to hold a misconception, explicitly contrast the wrong idea vs the correct one.\n\n"
-    )
-    return _TUTOR_INSTRUCTION_BASE + adaptive + "Student says: "
+    return _TUTOR_INSTRUCTION_BASE  + "Student says: "
 
 
 async def deep_tutor_respond(
@@ -428,7 +393,6 @@ async def mock_tutor_generate_practice_questions(
     *,
     tutor_history: list[dict[str, str]],
     kb_name: str | None,
-    prior_sessions_summary: str | None,
     num_questions: int = PRACTICE_QUESTION_COUNT,
 ) -> list[str]:
     """
@@ -464,7 +428,6 @@ async def mock_tutor_generate_practice_questions(
                 prompt,
                 practice_history,
                 kb_name=kb_name,
-                prior_sessions_summary=prior_sessions_summary,
             )
             candidate = (candidate or "").strip()
             norm = _normalize_question_text(candidate)
@@ -549,7 +512,6 @@ async def _run_single_session(
                         student_msg,
                         tutor_history,
                         kb_name=kb_name,
-                        prior_sessions_summary=prior_sessions_summary,
                     )
             except Exception as e:
                 logger.error("Auto tutor failed (%s): %s", auto_backend, e)
@@ -615,7 +577,6 @@ async def _run_single_session(
                 practice_questions = await mock_tutor_generate_practice_questions(
                     tutor_history=tutor_history,
                     kb_name=kb_name,
-                    prior_sessions_summary=prior_sessions_summary,
                 )
         except Exception as e:
             logger.error("Auto tutor post-complete failed (%s): %s", auto_backend, e)
@@ -805,7 +766,6 @@ async def run_conversation(
                 practice_questions = await mock_tutor_generate_practice_questions(
                     tutor_history=tutor_history,
                     kb_name=kb_name,
-                    prior_sessions_summary=None,
                 )
         except Exception as e:
             logger.error("Auto tutor post-complete failed (%s): %s", auto_backend, e)
@@ -915,7 +875,7 @@ async def run_multi_session(
     - entry_paths: explicit list of entry JSON paths
 
     After each session, prior_sessions_summary is built and injected into
-    student and tutor prompts. If evolve_profile is True, the profile is
+    student context for the next session. If evolve_profile is True, the profile is
     evolved (resolved gaps → known_well) for the next session.
 
     Returns:
