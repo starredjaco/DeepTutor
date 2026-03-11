@@ -231,27 +231,45 @@ async def _process_profile(
                     verbose=verbose,
                 )
 
-        backend_tasks = {
-            backend: asyncio.create_task(
-                _run_one_backend(backend),
+        async def _run_one_backend_tagged(backend: str):
+            try:
+                return backend, await _run_one_backend(backend), None
+            except Exception as e:
+                return backend, None, e
+
+        backend_tasks = [
+            asyncio.create_task(
+                _run_one_backend_tagged(backend),
                 name=f"{kb_name}:{profile_id}:{backend}",
             )
             for backend in backends
-        }
-        backend_results = await asyncio.gather(
-            *backend_tasks.values(),
-            return_exceptions=True,
-        )
-        for backend, result in zip(backend_tasks.keys(), backend_results):
-            if isinstance(result, Exception):
+        ]
+        total_backends = len(backend_tasks)
+        completed_backends = 0
+        for task in asyncio.as_completed(backend_tasks):
+            completed_backends += 1
+            pct = round(100.0 * completed_backends / total_backends, 1) if total_backends else 100.0
+            backend, result, err = await task
+            if err is not None:
                 record["status"] = "error"
                 record["backends"][backend] = {
                     "status": "error",
-                    "error": str(result),
+                    "error": str(err),
                 }
-                logger.error("[%s] %s backend=%s failed: %s", kb_name, profile_id, backend, result)
-            else:
-                record["backends"][backend] = result
+                logger.error("[%s] %s backend=%s failed: %s", kb_name, profile_id, backend, err)
+                continue
+
+            record["backends"][backend] = result
+            logger.info(
+                "[%s] %s backend progress: %d/%d (%.1f%%) finished=%s status=%s",
+                kb_name,
+                profile_id,
+                completed_backends,
+                total_backends,
+                pct,
+                backend,
+                result.get("status", "unknown"),
+            )
         return record
 
 
@@ -338,7 +356,7 @@ async def main() -> None:
 
     sem = asyncio.Semaphore(args.concurrency)
     backend_sem = asyncio.Semaphore(max(1, args.backend_concurrency))
-    tasks = []
+    tasks: list[asyncio.Task] = []
     pre_errors: list[dict] = []
     for kb_name in kb_names:
         kb_profiles_root = entries_root / kb_name / "profiles"
@@ -390,8 +408,9 @@ async def main() -> None:
                 )
                 logger.error("[%s] %s has 0 entries, skipping", kb_name, profile_id)
                 continue
-            tasks.append(
-                _process_profile(
+            async def _run_profile_tagged(kb_name: str, profile_id: str, entries: list[dict]):
+                try:
+                    return await _process_profile(
                     kb_name=kb_name,
                     profile_id=profile_id,
                     entries=entries,
@@ -403,22 +422,43 @@ async def main() -> None:
                     language=args.language,
                     evolve_profile=not args.no_evolve,
                     verbose=args.verbose,
+                    )
+                except Exception as e:
+                    return {
+                        "kb_name": kb_name,
+                        "profile_id": profile_id,
+                        "status": "error",
+                        "error": str(e),
+                    }
+
+            tasks.append(
+                asyncio.create_task(
+                    _run_profile_tagged(kb_name, profile_id, entries),
+                    name=f"{kb_name}:{profile_id}",
                 )
             )
 
     logger.info("Launching %d profile simulation tasks", len(tasks))
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
     profile_results = []
     task_errors = 0
-    for r in results:
-        if isinstance(r, Exception):
+    total_profiles = len(tasks)
+    completed_profiles = 0
+    for task in asyncio.as_completed(tasks):
+        completed_profiles += 1
+        pct = round(100.0 * completed_profiles / total_profiles, 1) if total_profiles else 100.0
+        result = await task
+        profile_results.append(result)
+        if result.get("status") != "ok":
             task_errors += 1
-            profile_results.append({"status": "error", "error": str(r)})
-        else:
-            profile_results.append(r)
-            if r.get("status") != "ok":
-                task_errors += 1
+        logger.info(
+            "Profile progress: %d/%d (%.1f%%) finished=%s/%s status=%s",
+            completed_profiles,
+            total_profiles,
+            pct,
+            result.get("kb_name", "?"),
+            result.get("profile_id", "?"),
+            result.get("status", "unknown"),
+        )
 
     manifest = {
         "step": "step2_generate_transcripts",
