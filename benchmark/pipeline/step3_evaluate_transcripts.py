@@ -119,12 +119,17 @@ def _build_aggregate_summary(results: list[dict], output_root: Path) -> dict:
                 "num_profiles": 0,
                 "paired_turns_total": 0,
                 "tutor_turns_total": 0,
+                "faith_total_turns": 0,
+                "faith_failed_turns": 0,
+                "tq_total_turns": 0,
+                "tq_failed_turns": 0,
                 "faithfulness_scores": [],
                 "personalization_scores": [],
                 "applicability_scores": [],
                 "vividness_scores": [],
                 "logical_depth_scores": [],
                 "pq_total_questions": 0,
+                "pq_failed_questions": 0,
                 "pq_fitness": [],
                 "pq_groundedness": [],
                 "pq_diversity": [],
@@ -146,6 +151,12 @@ def _build_aggregate_summary(results: list[dict], output_root: Path) -> dict:
         g["tutor_turns_total"] += (
             s.get("turn_count", {}).get("tutor_turns_total", 0)
         )
+        sf = s.get("source_faithfulness", {})
+        tq = s.get("teaching_quality", {})
+        g["faith_total_turns"] += sf.get("num_total_turns_total", 0) or 0
+        g["faith_failed_turns"] += sf.get("num_failed_turns_total", 0) or 0
+        g["tq_total_turns"] += tq.get("num_total_turns_total", 0) or 0
+        g["tq_failed_turns"] += tq.get("num_failed_turns_total", 0) or 0
         faith = s.get("source_faithfulness", {}).get("avg_score_overall")
         if isinstance(faith, (int, float)):
             g["faithfulness_scores"].append(float(faith))
@@ -165,6 +176,7 @@ def _build_aggregate_summary(results: list[dict], output_root: Path) -> dict:
         pq = s.get("practice_questions", {})
         if pq:
             g["pq_total_questions"] += pq.get("total_questions_across_sessions", 0)
+            g["pq_failed_questions"] += pq.get("num_eval_failed_questions_total", 0) or 0
             for key, lst_key in [
                 ("avg_fitness", "pq_fitness"),
                 ("avg_groundedness", "pq_groundedness"),
@@ -185,14 +197,22 @@ def _build_aggregate_summary(results: list[dict], output_root: Path) -> dict:
             "paired_turns_total": paired_turns,
             "tutor_turns_total": tutor_turns,
             "avg_faithfulness": _safe_avg(s["faithfulness_scores"]),
+            "faithfulness_eval_failed_turns": s["faith_failed_turns"],
+            "faithfulness_eval_total_turns": s["faith_total_turns"],
+            "faithfulness_eval_failed_ratio": round(s["faith_failed_turns"] / s["faith_total_turns"], 4) if s["faith_total_turns"] else 0.0,
             "avg_personalization": _safe_avg(s["personalization_scores"]),
             "avg_applicability": _safe_avg(s["applicability_scores"]),
             "avg_vividness": _safe_avg(s["vividness_scores"]),
             "avg_logical_depth": _safe_avg(s["logical_depth_scores"]),
+            "teaching_quality_eval_failed_turns": s["tq_failed_turns"],
+            "teaching_quality_eval_total_turns": s["tq_total_turns"],
+            "teaching_quality_eval_failed_ratio": round(s["tq_failed_turns"] / s["tq_total_turns"], 4) if s["tq_total_turns"] else 0.0,
         }
         if s["pq_total_questions"] > 0:
             backend_summary["practice_questions"] = {
                 "total_questions": s["pq_total_questions"],
+                "eval_failed_questions": s["pq_failed_questions"],
+                "eval_failed_ratio": round(s["pq_failed_questions"] / s["pq_total_questions"], 4) if s["pq_total_questions"] else 0.0,
                 "avg_fitness": _safe_avg(s["pq_fitness"]),
                 "avg_groundedness": _safe_avg(s["pq_groundedness"]),
                 "avg_diversity": _safe_avg(s["pq_diversity"]),
@@ -381,6 +401,30 @@ async def main() -> None:
 
     print(f"\nSummary: {summary_path}")
     print(f"Manifest: {manifest_path}")
+    overall_faith_total = 0
+    overall_faith_failed = 0
+    overall_tq_total = 0
+    overall_tq_failed = 0
+    overall_pq_total = 0
+    overall_pq_failed = 0
+    for bsum in aggregate.get("by_backend", {}).values():
+        overall_faith_total += bsum.get("faithfulness_eval_total_turns", 0) or 0
+        overall_faith_failed += bsum.get("faithfulness_eval_failed_turns", 0) or 0
+        overall_tq_total += bsum.get("teaching_quality_eval_total_turns", 0) or 0
+        overall_tq_failed += bsum.get("teaching_quality_eval_failed_turns", 0) or 0
+        pqs = bsum.get("practice_questions", {}) or {}
+        overall_pq_total += pqs.get("total_questions", 0) or 0
+        overall_pq_failed += pqs.get("eval_failed_questions", 0) or 0
+
+    print(
+        "Scoring failed ratio | "
+        f"faithfulness: {overall_faith_failed}/{overall_faith_total} "
+        f"({(100.0 * overall_faith_failed / overall_faith_total) if overall_faith_total else 0.0:.2f}%), "
+        f"teaching_quality: {overall_tq_failed}/{overall_tq_total} "
+        f"({(100.0 * overall_tq_failed / overall_tq_total) if overall_tq_total else 0.0:.2f}%), "
+        f"practice_q: {overall_pq_failed}/{overall_pq_total} "
+        f"({(100.0 * overall_pq_failed / overall_pq_total) if overall_pq_total else 0.0:.2f}%)"
+    )
     print(
         f"Done. Evaluated: {manifest['num_evaluated']} "
         f"(new: {manifest['num_newly_evaluated']}, skipped: {manifest['num_skipped_existing']}) | "

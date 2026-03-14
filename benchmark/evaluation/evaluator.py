@@ -344,11 +344,16 @@ async def evaluate_source_faithfulness_turn(
 
 def _build_source_faithfulness_summary(per_turn: list[dict]) -> dict:
     """Aggregate metric-2 stats: min/max/avg over scored turns only."""
+    total_turns = len(per_turn)
+    failed_turns = sum(1 for t in per_turn if t.get("error"))
     scored = [t["faithfulness_score"] for t in per_turn if not t.get("not_applicable") and t.get("faithfulness_score") is not None]
     if not scored:
         return {
             "scale": "1-5",
+            "num_total_turns": total_turns,
             "num_scored_turns": 0,
+            "num_failed_turns": failed_turns,
+            "failed_ratio": round(failed_turns / total_turns, 4) if total_turns else 0.0,
             "max_score": None,
             "min_score": None,
             "avg_score": None,
@@ -356,7 +361,10 @@ def _build_source_faithfulness_summary(per_turn: list[dict]) -> dict:
         }
     return {
         "scale": "1-5",
+        "num_total_turns": total_turns,
         "num_scored_turns": len(scored),
+        "num_failed_turns": failed_turns,
+        "failed_ratio": round(failed_turns / total_turns, 4) if total_turns else 0.0,
         "max_score": max(scored),
         "min_score": min(scored),
         "avg_score": round(sum(scored) / len(scored), 4),
@@ -473,6 +481,9 @@ async def evaluate_teaching_quality_turn(
 
 def _build_teaching_quality_summary(per_turn: list[dict]) -> dict:
     """Aggregate turn-level teaching quality stats over scored turns only."""
+    total_turns = len(per_turn)
+    failed_turns = sum(1 for t in per_turn if t.get("error"))
+    not_applicable_turns = sum(1 for t in per_turn if t.get("not_applicable"))
     metric_keys = [
         "personalization_score",
         "applicability_score",
@@ -499,6 +510,11 @@ def _build_teaching_quality_summary(per_turn: list[dict]) -> dict:
 
     return {
         "scale": "1-5",
+        "num_total_turns": total_turns,
+        "num_failed_turns": failed_turns,
+        "failed_ratio": round(failed_turns / total_turns, 4) if total_turns else 0.0,
+        "num_not_applicable_turns": not_applicable_turns,
+        "not_applicable_ratio": round(not_applicable_turns / total_turns, 4) if total_turns else 0.0,
         "personalization": _pack(values_by_metric["personalization_score"]),
         "applicability": _pack(values_by_metric["applicability_score"]),
         "vividness": _pack(values_by_metric["vividness_score"]),
@@ -624,6 +640,7 @@ async def _eval_pq_per_question(
             "- cross_concept (1-5): Degree to which this question meaningfully connects "
             "multiple concepts instead of testing one isolated fact.\n"
         )
+        eval_failed = False
         try:
             raw = await factory.complete(prompt=prompt,
                 system_prompt="You are a strict education evaluator. Output valid JSON only.",
@@ -631,6 +648,7 @@ async def _eval_pq_per_question(
             parsed = extract_json(raw)
         except Exception as e:
             logger.warning("Practice Q%d per-question eval failed: %s", i, e)
+            eval_failed = True
             parsed = {"fitness": 1, "groundedness": 1, "diversity": 1, "answer_quality": 1, "cross_concept": 1,
                       "rationale": f"fallback: {e}"}
 
@@ -643,6 +661,7 @@ async def _eval_pq_per_question(
             "answer_quality": _clamp_score(parsed.get("answer_quality")) or 1,
             "cross_concept": _clamp_score(parsed.get("cross_concept")) or 1,
             "rationale": parsed.get("rationale", ""),
+            "eval_failed": eval_failed,
         })
     return results
 
@@ -659,6 +678,8 @@ async def evaluate_practice_questions(
             "per_question": [],
             "summary": {
                 "num_questions": 0,
+                "num_eval_failed_questions": 0,
+                "eval_failed_ratio": 0.0,
                 "avg_fitness": None,
                 "avg_groundedness": None,
                 "avg_diversity": None,
@@ -678,11 +699,15 @@ async def evaluate_practice_questions(
     diversity_scores = [pq["diversity"] for pq in per_question]
     answer_quality_scores = [pq["answer_quality"] for pq in per_question]
     cross_concept_scores = [pq["cross_concept"] for pq in per_question]
+    eval_failed_questions = sum(1 for pq in per_question if pq.get("eval_failed"))
+    total_questions = len(per_question)
 
     return {
         "per_question": per_question,
         "summary": {
-            "num_questions": len(per_question),
+            "num_questions": total_questions,
+            "num_eval_failed_questions": eval_failed_questions,
+            "eval_failed_ratio": round(eval_failed_questions / total_questions, 4) if total_questions else 0.0,
             "avg_fitness": round(sum(fitness_scores) / len(fitness_scores), 4) if fitness_scores else None,
             "avg_groundedness": round(sum(ground_scores) / len(ground_scores), 4) if ground_scores else None,
             "avg_diversity": round(sum(diversity_scores) / len(diversity_scores), 4) if diversity_scores else None,
@@ -825,6 +850,26 @@ async def _evaluate_single_session(
             "note": "skipped (--skip-turns)",
         }
 
+    sf_fail = source_faithfulness_metric.get("num_failed_turns", 0)
+    sf_total = source_faithfulness_metric.get("num_total_turns", 0)
+    tq_fail = teaching_quality_metric.get("num_failed_turns", 0)
+    tq_total = teaching_quality_metric.get("num_total_turns", 0)
+    pq_summary = result.get("metrics", {}).get("practice_questions", {}).get("summary", {})
+    pq_fail = pq_summary.get("num_eval_failed_questions", 0)
+    pq_total = pq_summary.get("num_questions", 0)
+    logger.info(
+        "Scoring fail ratio: faithfulness=%d/%d (%.2f%%), teaching_quality=%d/%d (%.2f%%), practice_q=%d/%d (%.2f%%)",
+        sf_fail,
+        sf_total,
+        (100.0 * sf_fail / sf_total) if sf_total else 0.0,
+        tq_fail,
+        tq_total,
+        (100.0 * tq_fail / tq_total) if tq_total else 0.0,
+        pq_fail,
+        pq_total,
+        (100.0 * pq_fail / pq_total) if pq_total else 0.0,
+    )
+
     return result
 
 
@@ -845,8 +890,13 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
     applicability_scores: list[float] = []
     vividness_scores: list[float] = []
     logical_depth_scores: list[float] = []
+    faith_total_turns = 0
+    faith_failed_turns = 0
+    tq_total_turns = 0
+    tq_failed_turns = 0
 
     pq_total_questions = 0
+    pq_failed_questions = 0
     pq_fitness: list[float] = []
     pq_ground: list[float] = []
     pq_diversity: list[float] = []
@@ -860,12 +910,16 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
         total_paired_turns += tc.get("paired_turns", 0)
 
         sf = s.get("metrics", {}).get("source_faithfulness", {})
+        faith_total_turns += sf.get("num_total_turns", 0) or 0
+        faith_failed_turns += sf.get("num_failed_turns", 0) or 0
         for t in sf.get("per_turn", []):
             score = t.get("faithfulness_score")
             if score is not None and not t.get("not_applicable"):
                 faith_scores.append(float(score))
 
         tq = s.get("metrics", {}).get("teaching_quality", {})
+        tq_total_turns += tq.get("num_total_turns", 0) or 0
+        tq_failed_turns += tq.get("num_failed_turns", 0) or 0
         for t in tq.get("per_turn", []):
             ps = t.get("personalization_score")
             app = t.get("applicability_score")
@@ -884,6 +938,7 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
         if pq and pq.get("summary"):
             sm = pq["summary"]
             pq_total_questions += sm.get("num_questions", 0)
+            pq_failed_questions += sm.get("num_eval_failed_questions", 0) or 0
             for key, lst in [
                 ("avg_fitness", pq_fitness),
                 ("avg_groundedness", pq_ground),
@@ -903,13 +958,19 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
         },
         "source_faithfulness": {
             "scale": "1-5",
+            "num_total_turns_total": faith_total_turns,
             "num_scored_turns_total": len(faith_scores),
+            "num_failed_turns_total": faith_failed_turns,
+            "failed_ratio_overall": round(faith_failed_turns / faith_total_turns, 4) if faith_total_turns else 0.0,
             "max_score_overall": max(faith_scores) if faith_scores else None,
             "min_score_overall": min(faith_scores) if faith_scores else None,
             "avg_score_overall": _safe_avg(faith_scores),
         },
         "teaching_quality": {
             "scale": "1-5",
+            "num_total_turns_total": tq_total_turns,
+            "num_failed_turns_total": tq_failed_turns,
+            "failed_ratio_overall": round(tq_failed_turns / tq_total_turns, 4) if tq_total_turns else 0.0,
             "num_scored_turns_personalization_total": len(personalization_scores),
             "num_scored_turns_applicability_total": len(applicability_scores),
             "num_scored_turns_vividness_total": len(vividness_scores),
@@ -924,6 +985,8 @@ def _aggregate_multi_session(session_results: list[dict]) -> dict:
     if pq_total_questions > 0:
         result["practice_questions"] = {
             "total_questions_across_sessions": pq_total_questions,
+            "num_eval_failed_questions_total": pq_failed_questions,
+            "eval_failed_ratio_overall": round(pq_failed_questions / pq_total_questions, 4) if pq_total_questions else 0.0,
             "avg_fitness": _safe_avg(pq_fitness),
             "avg_groundedness": _safe_avg(pq_ground),
             "avg_diversity": _safe_avg(pq_diversity),
