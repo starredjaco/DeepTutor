@@ -46,6 +46,9 @@ SUPPORTED_AUTO_BACKENDS = [
     "deep_tutor_no_memory",
     "deep_tutor_no_rag_memory",
     "mock",
+    "cot",
+    "self_refine",
+    "react",
 ]
 
 AutoBackend = Literal[
@@ -54,11 +57,30 @@ AutoBackend = Literal[
     "deep_tutor_no_memory",
     "deep_tutor_no_rag_memory",
     "mock",
+    "cot",
+    "self_refine",
+    "react",
 ]
 
 
 def _is_deeptutor_backend(backend: str) -> bool:
     return backend.startswith("deep_tutor")
+
+
+async def _dispatch_mock_like_backend(
+    backend: str,
+    student_message: str,
+    history: list[dict[str, str]],
+    kb_name: str | None,
+) -> str:
+    """Dispatch to the correct mock-like backend respond function."""
+    if backend == "cot":
+        return await cot_tutor_respond(student_message, history, kb_name)
+    if backend == "self_refine":
+        return await self_refine_tutor_respond(student_message, history, kb_name)
+    if backend == "react":
+        return await react_tutor_respond(student_message, history, kb_name)
+    return await mock_tutor_respond(student_message, history, kb_name)
 
 
 def _resolve_deeptutor_ablation_flags(backend: str) -> dict[str, bool]:
@@ -179,61 +201,106 @@ MOCK_TUTOR_SYSTEM = (
     "You are a helpful and patient tutor."
 )
 
+COT_TUTOR_SYSTEM = (
+    "You are a helpful and patient tutor.\n\n"
+    "Before responding, think step by step:\n"
+    "1. What is the student really asking or confused about?\n"
+    "2. What are the key concepts involved?\n"
+    "3. What is the best way to explain this to the student given the conversation so far?\n"
+    "4. Are there any common misconceptions to address?\n\n"
+    "Then provide your response to the student. "
+    "Do NOT output your thinking process — only output the final response to the student."
+)
+
+SELF_REFINE_SYSTEM = (
+    "You are a teaching quality reviewer. You will receive a tutor's draft response "
+    "to a student question, along with the student message and any retrieved context.\n\n"
+    "Improve the draft by:\n"
+    "- Making explanations more specific to what the student asked\n"
+    "- Adding concrete examples or step-by-step breakdowns where helpful\n"
+    "- Removing redundant or generic filler\n"
+    "- Ensuring accuracy and clarity\n\n"
+    "Output ONLY the improved response. Do NOT add meta-commentary."
+)
+
+REACT_THOUGHT_SYSTEM = (
+    "You are a tutoring strategist. Given a student's message and conversation history, "
+    "analyze what the student needs. Output a brief THOUGHT (2-4 sentences) that identifies:\n"
+    "- The student's core question or confusion\n"
+    "- Their apparent knowledge level based on the conversation\n"
+    "- Key concepts that need to be addressed\n\n"
+    "Output ONLY the thought. Do NOT respond to the student."
+)
+
+REACT_ACT_SYSTEM = (
+    "You are a tutoring strategist. Given a THOUGHT analysis about a student's question, "
+    "decide on an ACTION plan. Output a brief ACTION (2-4 sentences) specifying:\n"
+    "- What teaching strategy to use (explain, give example, ask Socratic question, correct misconception, etc.)\n"
+    "- What specific content to include\n"
+    "- How to structure the response\n\n"
+    "Output ONLY the action plan. Do NOT respond to the student."
+)
+
+REACT_OBSERVE_SYSTEM = (
+    "You are a tutoring quality checker. Given a THOUGHT and ACTION plan for responding "
+    "to a student, evaluate and refine the plan. Output a brief OBSERVATION (2-4 sentences):\n"
+    "- Is the planned action appropriate for this student's level?\n"
+    "- Any risks of confusion or inaccuracy?\n"
+    "- Any adjustments needed?\n\n"
+    "Output ONLY the observation. Do NOT respond to the student."
+)
+
+REACT_RESPOND_SYSTEM = (
+    "You are a helpful and patient tutor. You have analyzed the student's question "
+    "(THOUGHT), decided on a strategy (ACTION), and reviewed your plan (OBSERVATION).\n\n"
+    "Now produce the final response to the student. Use the insights from your analysis "
+    "but do NOT mention the thought/action/observation process. "
+    "Respond naturally as a tutor would."
+)
+
+
+async def _retrieve_rag_context(student_message: str, kb_name: str | None) -> str:
+    """Shared RAG retrieval for mock-like backends."""
+    if not kb_name:
+        return ""
+    from src.tools.rag_tool import rag_search
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rag_result = await rag_search(
+                query=student_message,
+                kb_name=kb_name,
+                mode="naive",
+                only_need_context=True,
+                top_k=2,
+            )
+        rag_answer = (rag_result.get("answer") or rag_result.get("content") or "").strip()
+        if rag_answer:
+            return (
+                "## Retrieved context (RAG, naive mode)\n"
+                f"{rag_answer[:1500]}\n\n"
+            )
+    except Exception as e:
+        logger.warning("RAG retrieval failed for kb=%s: %s", kb_name, e)
+    return ""
+
 
 async def mock_tutor_respond(
     student_message: str,
     history: list[dict[str, str]],
     kb_name: str | None = None,
 ) -> str:
-    """
-    Generate a mock tutor response using LLM.
-
-    Args:
-        student_message: The student's latest message
-        history: Conversation history from tutor's perspective
-            (role="user" for student, role="assistant" for tutor)
-        kb_name: Knowledge base name used for RAG retrieval
-
-    Returns:
-        Tutor response string
-    """
+    """Generate a mock tutor response using LLM (single call, minimal prompt)."""
     from src.services.llm import factory
-    from src.tools.rag_tool import rag_search
 
-    system = MOCK_TUTOR_SYSTEM
-
-    # Auto mode RAG: use raw student message as query in naive mode.
-    rag_context = ""
-    if kb_name:
-        try:
-            # Some RAG internals print INFO lines directly to stdout/stderr.
-            # Silence those noisy streams during retrieval in auto mode.
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                rag_result = await rag_search(
-                    query=student_message,
-                    kb_name=kb_name,
-                    mode="naive",
-                    only_need_context=True,
-                    top_k=2,
-                )
-            rag_answer = (rag_result.get("answer") or rag_result.get("content") or "").strip()
-            if rag_answer:
-                rag_context = (
-                    "## Retrieved context (RAG, naive mode)\n"
-                    f"{rag_answer[:1500]}\n\n"
-                )
-        except Exception as e:
-            logger.warning("RAG retrieval failed for kb=%s: %s", kb_name, e)
-
-    # No action hint; tutor infers intent from message content.
+    rag_context = await _retrieve_rag_context(student_message, kb_name)
     user_content = f"{rag_context}## Student message\n{student_message}"
 
-    # Build messages from tutor's perspective
-    messages = [{"role": "system", "content": system}]
+    messages = [{"role": "system", "content": MOCK_TUTOR_SYSTEM}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_content})
 
-    response = await factory.complete(
+    return await factory.complete(
         prompt="",
         system_prompt="",
         messages=messages,
@@ -241,7 +308,130 @@ async def mock_tutor_respond(
         max_tokens=1024,
     )
 
-    return response
+
+async def cot_tutor_respond(
+    student_message: str,
+    history: list[dict[str, str]],
+    kb_name: str | None = None,
+) -> str:
+    """Generate a tutor response with Chain-of-Thought prompting (single call)."""
+    from src.services.llm import factory
+
+    rag_context = await _retrieve_rag_context(student_message, kb_name)
+    user_content = f"{rag_context}## Student message\n{student_message}"
+
+    messages = [{"role": "system", "content": COT_TUTOR_SYSTEM}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_content})
+
+    return await factory.complete(
+        prompt="",
+        system_prompt="",
+        messages=messages,
+        temperature=0.5,
+        max_tokens=1024,
+    )
+
+
+async def self_refine_tutor_respond(
+    student_message: str,
+    history: list[dict[str, str]],
+    kb_name: str | None = None,
+) -> str:
+    """Generate a tutor response via mock draft + LLM refinement (two calls)."""
+    from src.services.llm import factory
+
+    draft = await mock_tutor_respond(student_message, history, kb_name)
+
+    rag_context = await _retrieve_rag_context(student_message, kb_name)
+    refine_prompt = (
+        f"{rag_context}"
+        f"## Student message\n{student_message}\n\n"
+        f"## Draft tutor response (improve this)\n{draft}"
+    )
+
+    messages = [{"role": "system", "content": SELF_REFINE_SYSTEM}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": refine_prompt})
+
+    refined = await factory.complete(
+        prompt="",
+        system_prompt="",
+        messages=messages,
+        temperature=0.3,
+        max_tokens=1024,
+    )
+    return refined
+
+
+async def react_tutor_respond(
+    student_message: str,
+    history: list[dict[str, str]],
+    kb_name: str | None = None,
+) -> str:
+    """Generate a tutor response via ReAct loop: thought -> act -> observe -> respond (four calls)."""
+    from src.services.llm import factory
+
+    rag_context = await _retrieve_rag_context(student_message, kb_name)
+
+    history_block = ""
+    if history:
+        recent = history[-16:]
+        lines = []
+        for msg in recent:
+            role = "Student" if msg.get("role") == "user" else "Tutor"
+            text = (msg.get("content", "") or "").strip()[:500]
+            if text:
+                lines.append(f"[{role}] {text}")
+        if lines:
+            history_block = "## Recent conversation\n" + "\n".join(lines) + "\n\n"
+
+    base_context = f"{rag_context}{history_block}## Current student message\n{student_message}"
+
+    # Step 1: Thought
+    thought = await factory.complete(
+        prompt=base_context,
+        system_prompt=REACT_THOUGHT_SYSTEM,
+        temperature=0.3,
+        max_tokens=400,
+    )
+
+    # Step 2: Act
+    act_prompt = f"{base_context}\n\n## THOUGHT\n{thought}"
+    action = await factory.complete(
+        prompt=act_prompt,
+        system_prompt=REACT_ACT_SYSTEM,
+        temperature=0.3,
+        max_tokens=400,
+    )
+
+    # Step 3: Observation
+    obs_prompt = f"{base_context}\n\n## THOUGHT\n{thought}\n\n## ACTION\n{action}"
+    observation = await factory.complete(
+        prompt=obs_prompt,
+        system_prompt=REACT_OBSERVE_SYSTEM,
+        temperature=0.3,
+        max_tokens=400,
+    )
+
+    # Step 4: Final response
+    resp_prompt = (
+        f"{base_context}\n\n"
+        f"## THOUGHT\n{thought}\n\n"
+        f"## ACTION\n{action}\n\n"
+        f"## OBSERVATION\n{observation}"
+    )
+    messages = [{"role": "system", "content": REACT_RESPOND_SYSTEM}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": resp_prompt})
+
+    return await factory.complete(
+        prompt="",
+        system_prompt="",
+        messages=messages,
+        temperature=0.5,
+        max_tokens=1024,
+    )
 
 
 _TUTOR_INSTRUCTION_BASE = (
@@ -630,10 +820,8 @@ async def _run_single_session(
                         tutor_history=tutor_history,
                     )
                 else:
-                    tutor_msg = await mock_tutor_respond(
-                        student_msg,
-                        tutor_history,
-                        kb_name=kb_name,
+                    tutor_msg = await _dispatch_mock_like_backend(
+                        auto_backend, student_msg, tutor_history, kb_name,
                     )
             except Exception as e:
                 logger.error("Auto tutor failed (%s): %s", auto_backend, e)
@@ -829,8 +1017,8 @@ async def run_conversation(
                         tutor_history=tutor_history,
                     )
                 else:
-                    tutor_msg = await mock_tutor_respond(
-                        student_msg, tutor_history, kb_name=kb_name
+                    tutor_msg = await _dispatch_mock_like_backend(
+                        auto_backend, student_msg, tutor_history, kb_name,
                     )
             except Exception as e:
                 logger.error("Auto tutor failed (%s): %s", auto_backend, e)

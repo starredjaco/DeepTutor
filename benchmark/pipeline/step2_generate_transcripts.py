@@ -37,6 +37,9 @@ logger = logging.getLogger("benchmark.pipeline.step2")
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmark" / "data" / "bench_pipeline"
 SUPPORTED_BACKENDS = {
     "mock",
+    "cot",
+    "self_refine",
+    "react",
     "deep_tutor",
     "deep_tutor_no_rag",
     "deep_tutor_no_memory",
@@ -385,8 +388,8 @@ async def main() -> None:
         default="mock,deep_tutor",
         help=(
             "Comma-separated backends (parallel per profile). "
-            "Supported: mock, deep_tutor, deep_tutor_no_rag, "
-            "deep_tutor_no_memory, deep_tutor_no_rag_memory"
+            "Supported: mock, cot, self_refine, react, deep_tutor, "
+            "deep_tutor_no_rag, deep_tutor_no_memory, deep_tutor_no_rag_memory"
         ),
     )
     parser.add_argument("--concurrency", type=int, default=6, help="Max parallel profiles")
