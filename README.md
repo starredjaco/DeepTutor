@@ -1,4 +1,8 @@
-# Evaluating DeepTutor
+# DeepTutor: Towards Agentic Personalized Tutoring
+
+**Bingxi Zhao**<sup>1,2*</sup>, **Jiahao Zhang**<sup>1*</sup>, **Xubin Ren**<sup>1</sup>, **Zirui Guo**<sup>1</sup>, **Tianzhe Chu**<sup>1</sup>, **Yi Ma**<sup>1</sup>, **Chao Huang**<sup>1†</sup>
+
+<sup>1</sup>University of Hong Kong &nbsp; <sup>2</sup>Beijing Jiaotong University &nbsp; <sup>*</sup>Equal contribution &nbsp; <sup>†</sup>Corresponding author
 
 DeepTutor is an intelligent tutoring system that has been evolving through multiple iterations and continues to be actively developed.
 
@@ -151,6 +155,13 @@ python benchmark/pipeline/step2_generate_transcripts.py \
   --backends "deep_tutor,mock,cot"
 ```
 
+### Table 1 — Main results on TutorBench (interactive evaluation)
+
+<p align="center">
+  <img src="assets/figs/table-1.png" alt="Table 1: Main results on TutorBench" width="820" />
+</p>
+
+
 **Step 3 — evaluate transcripts** (LLM-as-judge; metrics align with Table 1 below):
 
 ```bash
@@ -217,13 +228,6 @@ python -m benchmark.evaluation.run --transcript-dir path/to/transcripts/
 Simulator workspace tools: `solve_question()`, `generate_questions()`, `submit_answers()` — see [benchmark/simulation/USE_TOOL.md](benchmark/simulation/USE_TOOL.md).
 
 </details>
-
-
-### Table 1 — Main results on TutorBench (interactive evaluation)
-
-<p align="center">
-  <img src="assets/figs/table-1.png" alt="Table 1: Main results on TutorBench" width="820" />
-</p>
 
 ### Table 2 — General problem-solving (pass@1)
 
