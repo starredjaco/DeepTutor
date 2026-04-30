@@ -156,6 +156,43 @@ python3 -m benchmark.evaluation.run --transcript xxx.json -o results.json
 - Saved by default to `benchmark/data/evaluations/{stem}_eval_{timestamp}.json`
 - Supports both single-session and multi-session transcripts
 
+## 3.5 Human Alignment Pilot
+
+This workflow reuses Step 2 transcripts and Step 3 LLM judge outputs, then asks
+human raters to score the same benchmark dimensions on a blind package.
+
+```bash
+# 1. Export blind annotation materials
+python3 -m benchmark.human_alignment.export_annotations \
+  --output-root benchmark/data/bench_pipeline \
+  --kb-names "Calculus,LinearAlgebra" \
+  --backends "deep_tutor,mock,cot" \
+  --limit-per-backend 12
+
+# 2. Human raters fill the generated CSV template:
+# benchmark/data/bench_pipeline/human_alignment/annotation_template.csv
+
+# 3. Summarize human-vs-LLM alignment
+python3 -m benchmark.human_alignment.summarize_annotations \
+  --annotations benchmark/data/bench_pipeline/human_alignment/completed_annotations.csv \
+  --key benchmark/data/bench_pipeline/human_alignment/annotation_key.json
+```
+
+Outputs:
+
+- `annotation_package.jsonl`: anonymized material for raters; backend is hidden
+- `annotation_template.csv`: required human score schema
+- `annotation_key.json`: private mapping from annotation IDs to backend/eval files
+- `human_alignment_summary.json/.md`: human averages, LLM averages, MAE,
+  Spearman/Kendall correlations, pairwise ranking agreement, backend ranks, and
+  inter-rater pairwise correlations
+
+Human scores use the same 1-5 Step 3 dimensions:
+`source_faithfulness`, `personalization`, `applicability`, `vividness`,
+`logical_depth`, `pq_fitness`, `pq_groundedness`, `pq_diversity`,
+`pq_answer_quality`, and `pq_cross_concept`. `turn_count` remains objective
+metadata and is not scored by raters.
+
 ## 4. End-to-End Example
 
 ```bash
