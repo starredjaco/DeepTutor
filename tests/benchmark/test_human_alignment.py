@@ -121,6 +121,7 @@ def test_export_annotations_splits_sessions_and_hides_backend(tmp_path: Path) ->
 
     template_header = Path(manifest["annotation_template_path"]).read_text(encoding="utf-8").splitlines()[0]
     assert "annotation_id,rater_id,source_faithfulness" in template_header
+    assert Path(manifest["review_ui_path"]).exists()
 
 
 def test_summarize_annotations_merges_human_and_llm_scores(tmp_path: Path) -> None:
@@ -190,4 +191,3 @@ def test_summarize_annotations_merges_human_and_llm_scores(tmp_path: Path) -> No
     assert summary["metrics"]["source_faithfulness"]["by_backend"]["deep_tutor"]["human_rank"] == 1
     assert summary["inter_rater"]["source_faithfulness"]["mean_pairwise_pearson"] == 1.0
     assert (tmp_path / "human" / "summary.md").exists()
-

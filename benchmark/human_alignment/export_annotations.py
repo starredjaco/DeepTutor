@@ -38,6 +38,7 @@ from benchmark.human_alignment.common import (
 )
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmark" / "data" / "bench_pipeline"
+REVIEW_UI_SOURCE = Path(__file__).with_name("review_ui.html")
 
 
 def _parse_names(raw: str) -> list[str]:
@@ -250,12 +251,15 @@ def export_annotation_package(
     key_path = output_dir / "annotation_key.json"
     template_path = output_dir / "annotation_template.csv"
     rubric_path = output_dir / "rubric.md"
+    review_ui_path = output_dir / "review_ui.html"
     manifest_path = output_dir / "manifest.json"
 
     write_jsonl(package_path, package_rows)
     write_json(key_path, {"rubric_version": RUBRIC_VERSION, "items": key_rows})
     _write_template(template_path, [row["annotation_id"] for row in package_rows])
     rubric_path.write_text(RUBRIC_MARKDOWN, encoding="utf-8")
+    if REVIEW_UI_SOURCE.exists():
+        review_ui_path.write_text(REVIEW_UI_SOURCE.read_text(encoding="utf-8"), encoding="utf-8")
 
     manifest = {
         "step": "human_alignment_export_annotations",
@@ -271,6 +275,7 @@ def export_annotation_package(
         "annotation_key_path": str(key_path),
         "annotation_template_path": str(template_path),
         "rubric_path": str(rubric_path),
+        "review_ui_path": str(review_ui_path),
     }
     write_json(manifest_path, manifest)
     return manifest
@@ -323,10 +328,10 @@ def main() -> None:
     )
     print(f"Annotation package: {manifest['package_path']}")
     print(f"Annotation template: {manifest['annotation_template_path']}")
+    print(f"Review UI: {manifest['review_ui_path']}")
     print(f"Private key: {manifest['annotation_key_path']}")
     print(f"Items: {manifest['num_annotation_items']}")
 
 
 if __name__ == "__main__":
     main()
-

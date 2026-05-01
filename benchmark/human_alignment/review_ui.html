@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DeepTutor Human Alignment Review</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #18202a;
+        --muted: #667085;
+        --line: #d7dde5;
+        --panel: #ffffff;
+        --page: #f4f6f8;
+        --accent: #0f766e;
+        --accent-soft: #d9f3ee;
+        --warn: #9a5b10;
+        --student: #eef4ff;
+        --tutor: #eef8f0;
+        --source: #fff7dc;
+        --danger: #b42318;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--page);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.96);
+      }
+
+      .topbar-inner {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 12px 20px;
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) auto;
+        gap: 16px;
+        align-items: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 750;
+        letter-spacing: 0;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .file-input {
+        max-width: 270px;
+      }
+
+      .field {
+        display: grid;
+        gap: 4px;
+      }
+
+      .field label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      input[type="text"],
+      input[type="file"],
+      select,
+      textarea {
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+        color: var(--ink);
+        padding: 7px 10px;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 92px;
+        resize: vertical;
+      }
+
+      .btn {
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 7px 12px;
+        background: #fff;
+        color: var(--ink);
+        font-weight: 650;
+      }
+
+      .btn.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .layout {
+        max-width: 1440px;
+        width: 100%;
+        margin: 0 auto;
+        padding: 18px 20px 24px;
+        display: grid;
+        grid-template-columns: 290px minmax(0, 1fr) 360px;
+        gap: 16px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-width: 0;
+      }
+
+      .side {
+        align-self: start;
+        position: sticky;
+        top: 76px;
+        max-height: calc(100vh - 96px);
+        overflow: auto;
+      }
+
+      .panel-head {
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .panel-head h2 {
+        margin: 0;
+        font-size: 15px;
+        letter-spacing: 0;
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .status {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .progress {
+        height: 8px;
+        background: #e7ebf0;
+        border-radius: 99px;
+        overflow: hidden;
+      }
+
+      .progress span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: var(--accent);
+      }
+
+      .item-list {
+        display: grid;
+        gap: 6px;
+        margin-top: 12px;
+      }
+
+      .item-button {
+        width: 100%;
+        min-height: 36px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+        padding: 7px 9px;
+        text-align: left;
+      }
+
+      .item-button.active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .badge {
+        min-width: 28px;
+        min-height: 22px;
+        border-radius: 99px;
+        display: inline-grid;
+        place-items: center;
+        padding: 2px 7px;
+        background: #e9edf2;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .badge.done {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .main-content {
+        display: grid;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .kv {
+        display: grid;
+        gap: 8px;
+      }
+
+      .kv div {
+        min-width: 0;
+      }
+
+      .kv dt {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .kv dd {
+        margin: 2px 0 0;
+        overflow-wrap: anywhere;
+      }
+
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .chip {
+        min-height: 24px;
+        border-radius: 99px;
+        padding: 3px 8px;
+        background: #eef1f4;
+        color: #344054;
+        font-size: 12px;
+      }
+
+      .section-title {
+        margin: 0 0 10px;
+        font-size: 16px;
+        letter-spacing: 0;
+      }
+
+      .gap-list,
+      .questions,
+      .dialog {
+        display: grid;
+        gap: 10px;
+      }
+
+      .gap-item,
+      .question-item,
+      .message {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+        background: #fff;
+      }
+
+      .gap-title,
+      .message-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 750;
+        margin-bottom: 6px;
+      }
+
+      .source {
+        margin-top: 8px;
+        border-left: 3px solid #d89b20;
+        background: var(--source);
+        padding: 8px 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 13px;
+      }
+
+      .message.student {
+        background: var(--student);
+      }
+
+      .message.tutor {
+        background: var(--tutor);
+      }
+
+      .message-text,
+      .question-text {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .score-form {
+        display: grid;
+        gap: 12px;
+      }
+
+      .metric {
+        display: grid;
+        gap: 6px;
+      }
+
+      .metric-top {
+        display: grid;
+        grid-template-columns: minmax(120px, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .metric-name {
+        font-weight: 750;
+        overflow-wrap: anywhere;
+      }
+
+      .metric-help {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .score-buttons {
+        display: grid;
+        grid-template-columns: repeat(5, 36px);
+        gap: 5px;
+      }
+
+      .score {
+        width: 36px;
+        height: 34px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: #fff;
+        font-weight: 800;
+      }
+
+      .score.active {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .empty {
+        border: 1px dashed var(--line);
+        border-radius: 8px;
+        padding: 24px;
+        color: var(--muted);
+        background: #fff;
+      }
+
+      .notice {
+        color: var(--warn);
+        font-size: 13px;
+      }
+
+      .error {
+        color: var(--danger);
+        font-size: 13px;
+      }
+
+      .nav-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      @media (max-width: 1120px) {
+        .layout {
+          grid-template-columns: 240px minmax(0, 1fr);
+        }
+
+        .scores {
+          grid-column: 1 / -1;
+          position: static;
+          max-height: none;
+        }
+      }
+
+      @media (max-width: 820px) {
+        .topbar-inner,
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .toolbar {
+          justify-content: stretch;
+        }
+
+        .toolbar > * {
+          width: 100%;
+        }
+
+        .side {
+          position: static;
+          max-height: none;
+        }
+
+        .meta-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="topbar-inner">
+          <h1>DeepTutor Human Alignment Review</h1>
+          <div class="toolbar">
+            <div class="field">
+              <label for="raterId">Rater ID</label>
+              <input id="raterId" type="text" placeholder="rater_01" />
+            </div>
+            <div class="field file-input">
+              <label for="packageFile">Annotation package</label>
+              <input id="packageFile" type="file" accept=".jsonl,.json" />
+            </div>
+            <div class="field file-input">
+              <label for="resumeFile">Resume CSV</label>
+              <input id="resumeFile" type="file" accept=".csv" />
+            </div>
+            <button id="exportCsv" class="btn primary" disabled>Export CSV</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="panel side">
+          <div class="panel-head">
+            <h2>Items</h2>
+            <span id="countLabel" class="status">0/0</span>
+          </div>
+          <div class="panel-body">
+            <div class="progress"><span id="progressBar"></span></div>
+            <p id="loadState" class="status">Load annotation_package.jsonl.</p>
+            <div class="nav-row">
+              <button id="prevItem" class="btn" disabled>Prev</button>
+              <button id="nextItem" class="btn" disabled>Next</button>
+            </div>
+            <div id="itemList" class="item-list"></div>
+          </div>
+        </aside>
+
+        <section id="content" class="main-content">
+          <div class="empty">
+            Load an annotation package to begin reviewing transcripts.
+          </div>
+        </section>
+
+        <aside class="panel side scores">
+          <div class="panel-head">
+            <h2>Scores</h2>
+            <span id="scoreState" class="status">Not loaded</span>
+          </div>
+          <div class="panel-body">
+            <div id="scoreForm" class="score-form"></div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script>
+      const metrics = [
+        ["source_faithfulness", "Faithfulness", "Tutor content matches the source excerpts."],
+        ["personalization", "Personalization", "Tutor adapts to profile, gaps, and confusion."],
+        ["applicability", "Applicability", "Tutor helps the student progress on the task."],
+        ["vividness", "Vividness", "Explanations are concrete and example-rich."],
+        ["logical_depth", "Logical depth", "Reasoning and concepts are developed coherently."],
+        ["pq_fitness", "PQ fitness", "Practice questions fit the student and gaps."],
+        ["pq_groundedness", "PQ groundedness", "Practice questions align with the source excerpts."],
+        ["pq_diversity", "PQ diversity", "Practice questions cover varied angles."],
+        ["pq_answer_quality", "PQ answer quality", "Options and answers are well formed."],
+        ["pq_cross_concept", "PQ cross-concept", "Practice questions connect related concepts."],
+      ];
+      const columns = ["annotation_id", "rater_id", ...metrics.map((m) => m[0]), "comment"];
+      const state = {
+        items: [],
+        current: 0,
+        answers: {},
+        storageKey: "",
+      };
+
+      const els = {
+        raterId: document.getElementById("raterId"),
+        packageFile: document.getElementById("packageFile"),
+        resumeFile: document.getElementById("resumeFile"),
+        exportCsv: document.getElementById("exportCsv"),
+        content: document.getElementById("content"),
+        scoreForm: document.getElementById("scoreForm"),
+        itemList: document.getElementById("itemList"),
+        countLabel: document.getElementById("countLabel"),
+        progressBar: document.getElementById("progressBar"),
+        loadState: document.getElementById("loadState"),
+        scoreState: document.getElementById("scoreState"),
+        prevItem: document.getElementById("prevItem"),
+        nextItem: document.getElementById("nextItem"),
+      };
+
+      els.packageFile.addEventListener("change", loadPackage);
+      els.resumeFile.addEventListener("change", loadResumeCsv);
+      els.exportCsv.addEventListener("click", exportCsv);
+      els.prevItem.addEventListener("click", () => selectItem(state.current - 1));
+      els.nextItem.addEventListener("click", () => selectItem(state.current + 1));
+      els.raterId.addEventListener("input", () => {
+        saveCurrent();
+        persist();
+        renderSidebar();
+      });
+
+      function escapeHtml(value) {
+        return String(value ?? "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      function asList(value) {
+        return Array.isArray(value) ? value : value ? [value] : [];
+      }
+
+      function loadPackage(event) {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const text = String(reader.result || "");
+            const rows = text
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            if (!rows.length) throw new Error("No annotation items found.");
+            state.items = rows;
+            state.current = 0;
+            state.answers = {};
+            state.storageKey = "deeptutor-human-review:" + file.name + ":" + rows.length;
+            loadPersisted();
+            for (const item of rows) ensureAnswer(item.annotation_id);
+            els.exportCsv.disabled = false;
+            els.prevItem.disabled = false;
+            els.nextItem.disabled = false;
+            els.loadState.textContent = file.name;
+            selectItem(0);
+          } catch (err) {
+            showError("Could not load package: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      }
+
+      function ensureAnswer(annotationId) {
+        if (!state.answers[annotationId]) {
+          state.answers[annotationId] = {
+            annotation_id: annotationId,
+            rater_id: els.raterId.value.trim(),
+            comment: "",
+          };
+        }
+        return state.answers[annotationId];
+      }
+
+      function currentItem() {
+        return state.items[state.current] || null;
+      }
+
+      function saveCurrent() {
+        const item = currentItem();
+        if (!item) return;
+        const answer = ensureAnswer(item.annotation_id);
+        answer.rater_id = els.raterId.value.trim();
+        const comment = document.getElementById("comment");
+        if (comment) answer.comment = comment.value;
+      }
+
+      function selectItem(index) {
+        saveCurrent();
+        if (!state.items.length) return;
+        state.current = Math.max(0, Math.min(index, state.items.length - 1));
+        render();
+        persist();
+      }
+
+      function render() {
+        renderSidebar();
+        renderContent();
+        renderScoreForm();
+      }
+
+      function renderSidebar() {
+        const total = state.items.length;
+        const done = state.items.filter((item) => isComplete(item.annotation_id)).length;
+        els.countLabel.textContent = done + "/" + total;
+        els.progressBar.style.width = total ? `${(100 * done) / total}%` : "0%";
+        els.prevItem.disabled = !total || state.current === 0;
+        els.nextItem.disabled = !total || state.current >= total - 1;
+        els.itemList.innerHTML = state.items
+          .map((item, idx) => {
+            const complete = isComplete(item.annotation_id);
+            const title = item.task && item.task.title ? item.task.title : item.annotation_id;
+            return `
+              <button class="item-button ${idx === state.current ? "active" : ""}" data-index="${idx}">
+                <span>${escapeHtml(item.annotation_id)}<br><span class="status">${escapeHtml(title)}</span></span>
+                <span class="badge ${complete ? "done" : ""}">${complete ? "OK" : idx + 1}</span>
+              </button>`;
+          })
+          .join("");
+        for (const button of els.itemList.querySelectorAll("button")) {
+          button.addEventListener("click", () => selectItem(Number(button.dataset.index)));
+        }
+      }
+
+      function renderContent() {
+        const item = currentItem();
+        if (!item) return;
+        const profile = item.profile || {};
+        const task = item.task || {};
+        const known = asList(profile.known_well);
+        const partial = asList(profile.partially_known);
+        const unknown = asList(profile.unknown);
+        els.content.innerHTML = `
+          <section class="panel">
+            <div class="panel-head">
+              <h2>${escapeHtml(item.annotation_id)}</h2>
+              <span class="status">${escapeHtml(item.rubric_version || "")}</span>
+            </div>
+            <div class="panel-body meta-grid">
+              <dl class="kv">
+                <div><dt>Profile</dt><dd>${escapeHtml(profile.profile_id || "")}</dd></div>
+                <div><dt>Background</dt><dd>${escapeHtml(profile.education_background || "")}</dd></div>
+                <div><dt>Purpose</dt><dd>${escapeHtml(profile.learning_purpose || "")}</dd></div>
+                <div><dt>Personality</dt><dd>${escapeHtml(profile.personality || "")}</dd></div>
+                <div><dt>Beliefs</dt><dd>${escapeHtml(profile.beliefs || "")}</dd></div>
+              </dl>
+              <dl class="kv">
+                <div><dt>Task</dt><dd>${escapeHtml(task.title || "")}</dd></div>
+                <div><dt>Description</dt><dd>${escapeHtml(task.description || "")}</dd></div>
+                <div><dt>Success criteria</dt><dd>${escapeHtml(task.success_criteria || "")}</dd></div>
+                <div><dt>Known well</dt><dd>${chips(known)}</dd></div>
+                <div><dt>Partially known</dt><dd>${chips(partial)}</dd></div>
+                <div><dt>Unknown</dt><dd>${chips(unknown)}</dd></div>
+              </dl>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-body">
+              <h2 class="section-title">Gaps and Source</h2>
+              <div class="gap-list">${renderGaps(item.gaps || [])}</div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-body">
+              <h2 class="section-title">Dialog</h2>
+              <div class="dialog">${renderDialog(item.dialog || [])}</div>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-body">
+              <h2 class="section-title">Practice Questions</h2>
+              <div class="questions">${renderQuestions(item.practice_questions || [])}</div>
+            </div>
+          </section>`;
+      }
+
+      function chips(values) {
+        if (!values.length) return '<span class="status">None</span>';
+        return `<div class="chips">${values
+          .map((value) => `<span class="chip">${escapeHtml(value)}</span>`)
+          .join("")}</div>`;
+      }
+
+      function renderGaps(gaps) {
+        if (!gaps.length) return '<div class="empty">No gaps provided.</div>';
+        return gaps
+          .map((gap) => {
+            const excerpts = gap.source_excerpts || {};
+            const sourceHtml = Object.entries(excerpts)
+              .map(
+                ([page, text]) =>
+                  `<div class="source"><strong>Page ${escapeHtml(page)}</strong>\n${escapeHtml(text)}</div>`,
+              )
+              .join("");
+            return `<article class="gap-item">
+              <div class="gap-title">
+                <span>${escapeHtml(gap.gap_id || "")} ${escapeHtml(gap.target_concept || "")}</span>
+                <span>${escapeHtml(gap.gap_type || "")}</span>
+              </div>
+              <div>${escapeHtml(gap.description || "")}</div>
+              ${gap.manifestation ? `<p><strong>Manifestation:</strong> ${escapeHtml(gap.manifestation)}</p>` : ""}
+              ${gap.correct_understanding ? `<p><strong>Correct understanding:</strong> ${escapeHtml(gap.correct_understanding)}</p>` : ""}
+              ${sourceHtml || '<p class="notice">No source excerpt for this gap.</p>'}
+            </article>`;
+          })
+          .join("");
+      }
+
+      function renderDialog(dialog) {
+        if (!dialog.length) return '<div class="empty">No dialog provided.</div>';
+        return dialog
+          .map(
+            (message, idx) => `<article class="message ${escapeHtml(message.role || "")}">
+              <div class="message-head">
+                <span>${idx + 1}. ${escapeHtml(message.role || "")}</span>
+              </div>
+              <div class="message-text">${escapeHtml(message.content || "")}</div>
+            </article>`,
+          )
+          .join("");
+      }
+
+      function renderQuestions(questions) {
+        if (!questions.length) return '<div class="empty">No practice questions provided.</div>';
+        return questions
+          .map(
+            (question, idx) => `<article class="question-item">
+              <div class="gap-title"><span>Question ${idx + 1}</span></div>
+              <div class="question-text">${escapeHtml(question)}</div>
+            </article>`,
+          )
+          .join("");
+      }
+
+      function renderScoreForm() {
+        const item = currentItem();
+        if (!item) return;
+        const answer = ensureAnswer(item.annotation_id);
+        els.scoreState.textContent = isComplete(item.annotation_id) ? "Complete" : "Incomplete";
+        els.scoreForm.innerHTML = `
+          ${metrics
+            .map(([key, label, help]) => {
+              const current = answer[key] || "";
+              return `<div class="metric">
+                <div class="metric-top">
+                  <div>
+                    <div class="metric-name">${escapeHtml(label)}</div>
+                    <div class="metric-help">${escapeHtml(help)}</div>
+                  </div>
+                  <div class="score-buttons" data-metric="${key}">
+                    ${[1, 2, 3, 4, 5]
+                      .map(
+                        (score) =>
+                          `<button type="button" class="score ${Number(current) === score ? "active" : ""}" data-score="${score}">${score}</button>`,
+                      )
+                      .join("")}
+                  </div>
+                </div>
+              </div>`;
+            })
+            .join("")}
+          <div class="field">
+            <label for="comment">Comment</label>
+            <textarea id="comment">${escapeHtml(answer.comment || "")}</textarea>
+          </div>`;
+        for (const group of els.scoreForm.querySelectorAll(".score-buttons")) {
+          group.addEventListener("click", (event) => {
+            const button = event.target.closest("button");
+            if (!button) return;
+            const answer = ensureAnswer(item.annotation_id);
+            answer[group.dataset.metric] = button.dataset.score;
+            renderScoreForm();
+            renderSidebar();
+            persist();
+          });
+        }
+        document.getElementById("comment").addEventListener("input", (event) => {
+          ensureAnswer(item.annotation_id).comment = event.target.value;
+          persist();
+        });
+      }
+
+      function isComplete(annotationId) {
+        const answer = state.answers[annotationId];
+        if (!answer) return false;
+        return metrics.every(([key]) => Number(answer[key]) >= 1 && Number(answer[key]) <= 5);
+      }
+
+      function persist() {
+        if (!state.storageKey) return;
+        localStorage.setItem(
+          state.storageKey,
+          JSON.stringify({
+            answers: state.answers,
+            raterId: els.raterId.value.trim(),
+            current: state.current,
+          }),
+        );
+      }
+
+      function loadPersisted() {
+        const raw = localStorage.getItem(state.storageKey);
+        if (!raw) return;
+        try {
+          const data = JSON.parse(raw);
+          state.answers = data.answers || {};
+          if (data.raterId && !els.raterId.value) els.raterId.value = data.raterId;
+          state.current = Number(data.current || 0);
+        } catch {
+          state.answers = {};
+        }
+      }
+
+      function csvEscape(value) {
+        const text = String(value ?? "");
+        return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+      }
+
+      function exportCsv() {
+        saveCurrent();
+        const lines = [columns.join(",")];
+        for (const item of state.items) {
+          const answer = ensureAnswer(item.annotation_id);
+          answer.rater_id = answer.rater_id || els.raterId.value.trim();
+          const row = columns.map((column) => csvEscape(answer[column] || ""));
+          lines.push(row.join(","));
+        }
+        const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "completed_annotations.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function loadResumeCsv(event) {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const rows = parseCsv(String(reader.result || ""));
+            for (const row of rows) {
+              if (!row.annotation_id) continue;
+              state.answers[row.annotation_id] = { ...ensureAnswer(row.annotation_id), ...row };
+            }
+            render();
+            persist();
+          } catch (err) {
+            showError("Could not load CSV: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      }
+
+      function parseCsv(text) {
+        const rows = [];
+        let row = [];
+        let field = "";
+        let quoted = false;
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          const next = text[i + 1];
+          if (quoted) {
+            if (ch === '"' && next === '"') {
+              field += '"';
+              i++;
+            } else if (ch === '"') {
+              quoted = false;
+            } else {
+              field += ch;
+            }
+          } else if (ch === '"') {
+            quoted = true;
+          } else if (ch === ",") {
+            row.push(field);
+            field = "";
+          } else if (ch === "\n") {
+            row.push(field);
+            rows.push(row);
+            row = [];
+            field = "";
+          } else if (ch !== "\r") {
+            field += ch;
+          }
+        }
+        if (field || row.length) {
+          row.push(field);
+          rows.push(row);
+        }
+        if (!rows.length) return [];
+        const header = rows[0];
+        return rows.slice(1).map((values) => {
+          const obj = {};
+          header.forEach((key, idx) => {
+            obj[key] = values[idx] || "";
+          });
+          return obj;
+        });
+      }
+
+      function showError(message) {
+        els.content.innerHTML = `<div class="empty error">${escapeHtml(message)}</div>`;
+      }
+    </script>
+  </body>
+</html>

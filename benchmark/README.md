@@ -182,6 +182,7 @@ Outputs:
 
 - `annotation_package.jsonl`: anonymized material for raters; backend is hidden
 - `annotation_template.csv`: required human score schema
+- `review_ui.html`: browser-based scoring UI; open it and load `annotation_package.jsonl`
 - `annotation_key.json`: private mapping from annotation IDs to backend/eval files
 - `human_alignment_summary.json/.md`: human averages, LLM averages, MAE,
   Spearman/Kendall correlations, pairwise ranking agreement, backend ranks, and
